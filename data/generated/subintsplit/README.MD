@@ -142,3 +142,17 @@ regardless of the output directory. Only the Python standard library is required
 python3 generate.py --rebuild-prefixes \
     --dbip /path/to/dbip-city-ipv4.csv
 ```
+
+### A fourth, real-world dataset
+
+`extract_real_snowflake.py` samples real Twitter snowflake IDs from
+`EncodingsPlayground/Datasets/TwitterSnowflake/tweet_ids.parquet` (30.7M rows,
+sibling checkout) instead of simulating the field structure:
+
+```bash
+python3 extract_real_snowflake.py --out-dir /tmp/sis-big --rows 1048576
+```
+
+Writes `snowflake_i64_real/` alongside the other datasets. Requires `pyarrow`
+(only for this script). `run_subintsplit_tables.sh` includes it automatically
+when the parquet source is present; the benchmark otherwise skips it.
