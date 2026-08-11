@@ -26,8 +26,8 @@ residual, and the residual of the *whole* value is wide because the low fields d
 SubIntSplit cuts each value into contiguous bit ranges and FFORs each range separately, per
 vector, with its own base and bit width. Each field then pays its own narrow width.
 
-On the committed snowflake dataset this is 3.26× compression against 2.19× for the best
-existing encoding.
+On the snowflake dataset this is 3.23x compression against 2.17x for the best existing
+encoding, at 2^20 rows.
 
 **Where it does nothing.** On TPC-H partkey and IPv4 the selector chooses a single section
 and the result is plain FFOR to within 3 bytes. This is the design working: absent
@@ -102,7 +102,7 @@ output in bulk decode.
 Per section, `unffor` into scratch, then accumulate into the output — section 0 writes, later
 sections OR in, with the branch hoisted out of the inner loop.
 
-Cost is linear in section count: 0.111 ms/rowgroup for 3 sections against 0.028 for plain
+Cost is linear in section count: 0.126 ms/rowgroup for 3 sections against 0.054 for plain
 FFOR. **Bulk decode is where the compression is paid for.**
 
 ### Point
@@ -144,26 +144,52 @@ generator changes, it fails loudly instead of corrupting point reads silently.
 the span" and "decode the vector" are the same operation, because `unffor` cannot decode part
 of one.
 
-Measured crossover: just past 64 rows for a 1-section plan, between 64 and 256 for 3 sections
-— each extra section adds a scattered read per row but only one more sequential `unffor` to
-the decode.
+Measured crossover, at 2²⁰ rows with all indices pre-generated outside the timed loop:
+
+| column | sections | median bit width | crossover |
+|---|---|---|---|
+| tpch_partkey_i32 | 1 | 18 | ~35–40 rows |
+| snowflake_i64 | 3 | 5,6,8 | ~110–120 rows |
+| ipv4_i32 | 1 | 32 | ~150 rows |
+
+**`gather_decode_threshold` is a single constant (128) and the data says it should not be.** The
+crossover depends on section count *and* bit width — two single-section columns here differ by
+4× — so 128 sits inside the snowflake and IPv4 crossovers but is far above TPC-H's. A value
+derived at decode time from `bit_starts.size()` and the median bit width would fit the measured
+data much better. Left as a constant for now, and flagged here rather than silently retuned,
+because choosing the formula needs more columns than three.
 
 ## Results
 
-`benchmark/result/subintsplit/subintsplit.csv`. Snowflake IDs, 65536 rows:
+Full per-dataset tables, including the gather sweep and FastLanes' own wizard choice with and
+without SubIntSplit available, are generated into **[`tables/subintsplit.md`](../tables/subintsplit.md)**
+by `scripts/run_subintsplit_tables.sh`. Raw numbers land in
+`benchmark/result/subintsplit/subintsplit.csv`.
 
-| encoding | ratio | encode | bulk decode | point access |
-|---|---|---|---|---|
-| uncompressed | 1.00× | 31 ms | 0.001 ms/rg | 0.026 µs |
-| ffor | 2.12× | 18 ms | 0.028 ms/rg | 0.470 µs |
-| delta | 2.19× | 14 ms | 0.055 ms/rg | 0.929 µs |
-| ffor_slpatch | 2.12× | 1426 ms | 0.032 ms/rg | 0.445 µs |
-| **subintsplit** | **3.26×** | 62 ms | 0.111 ms/rg | **0.171 µs** |
+Headline, snowflake IDs at 2²⁰ rows (1 048 576 rows, 16 rowgroups, ~8 MB raw):
 
-TPC-H partkey and IPv4: 1 section, identical to FFOR within 3 bytes.
+| encoding | ratio | bulk decode | point (decode+index) |
+|---|---|---|---|
+| ffor | 2.11× | 0.054 ms/rg | 1.18 µs |
+| delta | 2.17× | 0.055 ms/rg | 8.72 µs |
+| ffor_slpatch | 2.11× | 0.038 ms/rg | 1.20 µs |
+| **subintsplit** | **3.23×** | 0.126 ms/rg | 3.79 µs |
 
-Encode is 3–4× slower than FFOR (the DP sweep, ~51 ms/column), though still 23× faster than
-`ffor_slpatch`.
+SubIntSplit's *native* point path reads 0.214 µs/probe — 18× faster than decoding its own
+vector, and 5.5× faster than FFOR's decode-then-index. See the comparability note below before
+quoting that number.
+
+**The wizard picks SubIntSplit on its own.** With a default `Connection` it selects
+`EXP_SUBINTSPLIT_I64` for the snowflake column (3.23×); with `disable_encoding` applied to both
+SubIntSplit tokens it falls back to `EXP_DELTA_I64` at 2.16×. That ablation is what
+`Connection::disable_encoding` exists for.
+
+TPC-H partkey and IPv4: the selector chooses a single section, so the result is plain FFOR plus
+48 bytes (16 rowgroups × a 3-byte layout header). On IPv4 the wizard prefers
+`EXP_DICT_I32_FFOR_U16` at 1.01× whether or not SubIntSplit is available.
+
+Encode is ~4.5× slower than FFOR — the DP sweep runs once per column per rowgroup — though still
+far cheaper than `ffor_slpatch`.
 
 ### Reading these numbers honestly
 
@@ -173,13 +199,25 @@ Encode is 3–4× slower than FFOR (the DP sweep, ~51 ms/column), though still 2
 others do not have.
 
 **Point access is not a like-for-like speed test.** Every other encoding must decode the
-containing vector and index into it; the table's point column reports that for them
-(`point_via_bulk`) and position arithmetic for SubIntSplit. The 2.7× is a *capability* gap,
-not a faster implementation of the same operation. Two honest framings to keep in view:
+containing vector and index into it. The main table's `Point` column reports exactly that for
+every row, including SubIntSplit — `point_decode_then_index` — so that column *is* comparable.
+SubIntSplit's position-arithmetic path is reported separately, in the native random-access
+table, precisely because it is a *capability* gap rather than a faster implementation of the
+same operation. Three framings to keep in view:
 
-- against decoding its own vector (2.388 µs), point access wins by 14×;
-- against a single-section FFOR column read the same way, splitting must *lose*, because K
+- native point access (0.214 µs) against decoding its own vector (3.79 µs): **18× faster**;
+- against FFOR's decode-then-index (1.18 µs): **5.5× faster** — but that is SubIntSplit doing a
+  different, cheaper operation, not beating FFOR at the same one;
+- against a single-section FFOR column read *the same way*, splitting must **lose**, because K
   scattered reads cost more than one. Splitting buys compression on this path, not speed.
+
+**Working set.** Benchmarks run at 2²⁰ rows — ~8 MB raw, ~2.5 MB compressed per column — which
+exceeds L2 and stresses L3. Numbers taken earlier in this repo's history at 65 536 rows were
+entirely cache-resident and are not comparable with these.
+
+**Encode time is not like-for-like either.** Forced-encoding rows evaluate a single candidate;
+the wizard rows search the whole pool plus the dictionary pool and run `Cast()` and every
+pre-pass. The generated tables bold those two groups independently for this reason.
 
 ## Divergences from the Nimble implementation
 
@@ -209,12 +247,19 @@ cmake --build build --parallel
 ./build/test/src/expression_tests/test_subintsplit        # round-trip
 ./build/test/src/expression_tests/test_subintsplit_access # point + gather vs full decode
 
-cmake -S . -B build-bench -G Ninja -DCMAKE_BUILD_TYPE=Release -DFLS_BUILD_BENCHMARKING=ON
-cmake --build build-bench --target bench_subintsplit --parallel
-./build-bench/benchmark/bench_subintsplit/bench_subintsplit
+# benchmarks + tables in one step: generates 2^20-row datasets, builds, runs, renders
+scripts/run_subintsplit_tables.sh
 ```
 
-Datasets regenerate at any size via `data/generated/subintsplit/generate.py --rows N`.
+That writes `benchmark/result/subintsplit/subintsplit.csv` and
+[`tables/subintsplit.md`](../tables/subintsplit.md). `--skip-bench` re-renders the tables from
+the existing CSV, `--rows N` changes the dataset size.
+
+The 2^20-row datasets are ~38 MB and are therefore **not committed** — the driver regenerates
+them deterministically from fixed seeds into `bench-build/subintsplit-data`. The committed
+65 536-row datasets under `data/generated/` remain the correctness-test inputs and are never
+regenerated at another size; `generate.py` refuses to, because `test_subintsplit` depends on
+them.
 
 Note: several *pre-existing* test failures in this repo are unrelated to SubIntSplit —
 datasets such as `data/generated/encodings/frequency_dbl` and
@@ -230,4 +275,7 @@ tests fail with "csv file is not found" on a clean checkout.
 | `src/expression/subintsplit_operator.cpp` | encode, decode, point, gather |
 | `src/include/fls/primitive/unffor_single.hpp` | single-value unpack |
 | `benchmark/bench_subintsplit/` | benchmark driver |
+| `scripts/run_subintsplit_tables.sh` | generate + build + run + render |
+| `scripts/render_subintsplit_tables.py` | Markdown table generator |
+| `tables/subintsplit.md` | generated comparison tables |
 | `data/generated/subintsplit/` | datasets and generator |
