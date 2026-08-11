@@ -13,6 +13,7 @@
 #include "fls/ffor.hpp"
 #include "fls/primitive/bitpack/bitpack.hpp"
 #include "fls/primitive/copy/fls_copy.hpp"
+#include "fls/primitive/unffor_single.hpp"
 #include "fls/reader/column_view.hpp"
 #include "fls/reader/segment.hpp"
 #include "fls/std/vector.hpp"
@@ -238,6 +239,81 @@ void dec_subintsplit_opr<PT>::Decode(const n_t vec_idx) {
 				output[i] |= static_cast<UT>((unffored_arr[i] & mask) << shift);
 			}
 		}
+	}
+}
+
+template <typename PT>
+PT dec_subintsplit_opr<PT>::ValueAt(const n_t idx) const {
+	constexpr bw_t TOTAL_BITS = static_cast<bw_t>(sizeof(UT) * 8);
+
+	const n_t n_sections = bit_starts.size();
+	UT        value {0};
+
+	for (n_t s {0}; s < n_sections; ++s) {
+		const bw_t bw   = *reinterpret_cast<const bw_t*>(bw_segment_views[s].data);
+		const UT   base = *reinterpret_cast<const UT*>(base_segment_views[s].data);
+		const UT   section =
+		    unffor_single<UT>(reinterpret_cast<const UT*>(bitpacked_segment_views[s].data), bw, base, idx);
+
+		const bw_t shift = bit_starts[s];
+		const bw_t width = static_cast<bw_t>((s + 1 < n_sections ? bit_starts[s + 1] : TOTAL_BITS) - bit_starts[s]);
+		value |= static_cast<UT>((section & section_mask<UT>(width)) << shift);
+	}
+
+	return static_cast<PT>(value);
+}
+
+template <typename PT>
+PT dec_subintsplit_opr<PT>::PointAccess(const n_t vec_idx, const n_t idx) {
+	PointTo(vec_idx);
+	return ValueAt(idx);
+}
+
+template <typename PT>
+void dec_subintsplit_opr<PT>::GatherPointwise(const n_t vec_idx, const idx_t* rows, const n_t n, PT* out) {
+	constexpr bw_t TOTAL_BITS = static_cast<bw_t>(sizeof(UT) * 8);
+
+	PointTo(vec_idx);
+
+	const n_t n_sections = bit_starts.size();
+	auto*     output     = reinterpret_cast<UT*>(out);
+
+	// Sections outermost so each section's bit width, base and buffer pointer are loaded once for the whole gather
+	// rather than once per row.
+	for (n_t s {0}; s < n_sections; ++s) {
+		const bw_t  bw     = *reinterpret_cast<const bw_t*>(bw_segment_views[s].data);
+		const UT    base   = *reinterpret_cast<const UT*>(base_segment_views[s].data);
+		const auto* packed = reinterpret_cast<const UT*>(bitpacked_segment_views[s].data);
+		const bw_t  shift  = bit_starts[s];
+		const bw_t  width  = static_cast<bw_t>((s + 1 < n_sections ? bit_starts[s + 1] : TOTAL_BITS) - bit_starts[s]);
+		const UT    mask   = section_mask<UT>(width);
+
+		if (s == 0) {
+			for (n_t i {0}; i < n; ++i) {
+				output[i] = static_cast<UT>((unffor_single<UT>(packed, bw, base, rows[i]) & mask) << shift);
+			}
+		} else {
+			for (n_t i {0}; i < n; ++i) {
+				output[i] |= static_cast<UT>((unffor_single<UT>(packed, bw, base, rows[i]) & mask) << shift);
+			}
+		}
+	}
+}
+
+template <typename PT>
+void dec_subintsplit_opr<PT>::GatherDecoded(const n_t vec_idx, const idx_t* rows, const n_t n, PT* out) {
+	Decode(vec_idx);
+	for (n_t i {0}; i < n; ++i) {
+		out[i] = data[rows[i]];
+	}
+}
+
+template <typename PT>
+void dec_subintsplit_opr<PT>::Gather(const n_t vec_idx, const idx_t* rows, const n_t n, PT* out) {
+	if (n >= gather_decode_threshold) {
+		GatherDecoded(vec_idx, rows, n, out);
+	} else {
+		GatherPointwise(vec_idx, rows, n, out);
 	}
 }
 

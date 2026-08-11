@@ -92,7 +92,38 @@ public:
 	void Decode(n_t vec_idx);
 	void Materialize(n_t vec_idx, TypedCol<PT>& typed_col);
 
+	/*----------------------------------------------------------------------------------------------------------------
+	 * Point and gather access.
+	 *
+	 * FastLanes has neither path for any other encoding: unffor is all-or-nothing over a vector, so reading one value
+	 * means decoding the 1024 values around it. SubIntSplit can do better, because unffor_single reaches a single
+	 * value by position arithmetic - one value costs K scattered word reads, one per section, instead of K decoded
+	 * vectors.
+	 *
+	 * Note what this does and does not beat. Against decode-the-whole-vector it wins by a wide margin; against a
+	 * single-section FFOR column read the same way it necessarily loses, because K reads cost more than one. Splitting
+	 * buys compression on this path, not speed.
+	 *---------------------------------------------------------------------------------------------------------------*/
+
+	// One value from the vector the segment views currently point at.
+	[[nodiscard]] PT ValueAt(n_t idx) const;
+	// One value, pointing the segment views first.
+	[[nodiscard]] PT PointAccess(n_t vec_idx, n_t idx);
+
+	// Gather `n` rows of one vector. Pointwise reaches only the rows asked for; Decoded decodes the whole vector and
+	// then gathers. Decoded is also the like-for-like comparison against Nimble's bulkScan, which likewise decodes a
+	// whole span and gathers out of it - within a vector, "decode the span" and "decode the vector" are the same
+	// thing here, because unffor cannot decode part of one.
+	void GatherPointwise(n_t vec_idx, const idx_t* rows, n_t n, PT* out);
+	void GatherDecoded(n_t vec_idx, const idx_t* rows, n_t n, PT* out);
+	// Picks between the two on selectivity.
+	void Gather(n_t vec_idx, const idx_t* rows, n_t n, PT* out);
+
 public:
+	// Row count at or above which Gather() decodes the vector instead of reaching per row. A member rather than a
+	// constant so the benchmark can sweep it: the crossover depends on section count and is worth measuring, not
+	// guessing.
+	n_t gather_decode_threshold {64};
 	// Section s covers bits [bit_starts[s], bit_starts[s + 1) - 1], the last one up to 8 * sizeof(PT) - 1.
 	vector<bw_t>        bit_starts;
 	vector<SegmentView> bitpacked_segment_views;
