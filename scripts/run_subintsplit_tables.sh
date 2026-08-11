@@ -155,6 +155,23 @@ else
   echo "✔ datasets written to $DATA_DIR"
 fi
 
+# Real-world snowflake IDs are optional: they need pyarrow and the sibling
+# EncodingsPlayground checkout, neither of which is guaranteed to be present. Best
+# effort, never fatal -- the benchmark itself skips this dataset if it is absent.
+REAL_EXTRACTOR="data/generated/subintsplit/extract_real_snowflake.py"
+REAL_DIR="$DATA_DIR/snowflake_i64_real"
+if [[ "$SKIP_GENERATE" -eq 0 ]]    && { [[ "$FORCE_GENERATE" -eq 1 ]] || [[ ! -f "$REAL_DIR/generated.csv" ]]; }; then
+  if python3 -c "import pyarrow" >/dev/null 2>&1; then
+    if python3 "$REAL_EXTRACTOR" --out-dir "$DATA_DIR" --rows "$ROWS"; then
+      echo "✔ real-world snowflake dataset written to $REAL_DIR"
+    else
+      echo "↷ real-world snowflake dataset unavailable (source parquet not found) – skipping"
+    fi
+  else
+    echo "↷ pyarrow not installed – skipping the real-world snowflake dataset"
+  fi
+fi
+
 ################################################################################
 echo
 echo "── Step 3: configure CMake ($BUILD_DIR) ──────────────────────────────"
