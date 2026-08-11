@@ -25,6 +25,7 @@
 #include "fls/expression/rsum_operator.hpp"
 #include "fls/expression/scan_operator.hpp"
 #include "fls/expression/slpatch_operator.hpp"
+#include "fls/expression/subintsplit_operator.hpp"
 #include "fls/expression/transpose_operator.hpp"
 #include "fls/expression/validitymask_operator.hpp"
 #include "fls/reader/segment.hpp"
@@ -211,6 +212,14 @@ struct point_to_visitor {
 	void operator()(const sp<enc_frequency_opr<PT>>& opr) {
 		opr->PointTo(vec_idx);
 	}
+	template <typename PT>
+	void operator()(const sp<enc_subintsplit_opr<PT>>& opr) {
+		opr->PointTo(vec_idx);
+	}
+	template <typename PT>
+	void operator()(const sp<dec_subintsplit_opr<PT>>& opr) {
+		opr->PointTo(vec_idx);
+	}
 	void operator()(const sp<dec_frequency_str_opr>& opr) {
 		opr->PointTo(vec_idx);
 	}
@@ -361,6 +370,10 @@ struct flush_segments_visitor {
 
 	template <typename PT>
 	void operator()(const sp<enc_frequency_opr<PT>>& opr) {
+		opr->MoveSegments(segments);
+	}
+	template <typename PT>
+	void operator()(const sp<enc_subintsplit_opr<PT>>& opr) {
 		opr->MoveSegments(segments);
 	}
 
@@ -520,6 +533,10 @@ struct extract_segments_visitor {
 	void operator()(const sp<enc_frequency_opr<PT>>& opr) {
 		opr->MoveSegments(segments);
 	}
+	template <typename PT>
+	void operator()(const sp<enc_subintsplit_opr<PT>>& opr) {
+		opr->MoveSegments(segments);
+	}
 	void operator()(const sp<enc_frequency_str_opr>& opr) {
 		opr->MoveSegments(segments);
 	}
@@ -660,6 +677,10 @@ struct finalize_operators_visitor {
 	//
 	template <typename PT>
 	void operator()(const sp<enc_frequency_opr<PT>>& opr) {
+		opr->Finalize();
+	}
+	template <typename PT>
+	void operator()(const sp<enc_subintsplit_opr<PT>>& opr) {
 		opr->Finalize();
 	}
 	void operator()(const sp<enc_frequency_str_opr>& opr) {

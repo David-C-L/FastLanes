@@ -22,6 +22,7 @@
 #include "fls/expression/physical_expression.hpp"
 #include "fls/expression/rle_expression.hpp"
 #include "fls/expression/slpatch_operator.hpp"
+#include "fls/expression/subintsplit_operator.hpp"
 #include "fls/expression/transpose_operator.hpp"
 #include "fls/expression/validitymask_operator.hpp"
 #include "fls/primitive/copy/fls_copy.hpp"
@@ -169,6 +170,10 @@ struct material_visitor {
 	}
 	template <typename PT>
 	void operator()(const sp<dec_frequency_opr<PT>>& opr, up<TypedCol<PT>>& typed_col) const {
+		opr->Materialize(vec_idx, *typed_col);
+	}
+	template <typename PT>
+	void operator()(const sp<dec_subintsplit_opr<PT>>& opr, up<TypedCol<PT>>& typed_col) const {
 		opr->Materialize(vec_idx, *typed_col);
 	}
 	void operator()(const sp<dec_frequency_str_opr>& opr, up<FLSStrColumn>& typed_col) const {

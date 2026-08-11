@@ -579,6 +579,7 @@ vector<OperatorToken>& get_pool(const DataType data_typ) {
 		    OperatorToken::EXP_FFOR_I64,
 		    OperatorToken::EXP_FREQUENCY_I64,
 		    OperatorToken::EXP_CROSS_RLE_I64,
+		    OperatorToken::EXP_SUBINTSPLIT_I64,
 		};
 
 		static vector<OperatorToken> I32_POOL = {
@@ -590,6 +591,7 @@ vector<OperatorToken>& get_pool(const DataType data_typ) {
 		    OperatorToken::EXP_FFOR_I32,
 		    OperatorToken::EXP_FREQUENCY_I32,
 		    OperatorToken::EXP_CROSS_RLE_I32, //
+		    OperatorToken::EXP_SUBINTSPLIT_I32,
 		};
 
 		static vector<OperatorToken> I16_POOL = {

@@ -27,6 +27,7 @@
 #include "fls/expression/rsum_operator.hpp"
 #include "fls/expression/scan_operator.hpp"
 #include "fls/expression/slpatch_operator.hpp"
+#include "fls/expression/subintsplit_operator.hpp"
 #include "fls/expression/transpose_operator.hpp"
 #include "fls/expression/validitymask_operator.hpp"
 #include "fls/reader/column_view.hpp"
@@ -217,6 +218,16 @@ void make_dec_frequency_expr(PhysicalExpr& physical_expr, const ColumnView& colu
 	state.cur_operand = column_view.column_descriptor.encoding_rpn()->operand_tokens()->size() - 1;
 	physical_expr.operators.emplace_back(
 	    dec_physical_operator {make_shared<dec_frequency_opr<PT>>(physical_expr, column_view, state)});
+}
+
+/*--------------------------------------------------------------------------------------------------------------------*\
+ * make_dec_subintsplit_expr
+\*--------------------------------------------------------------------------------------------------------------------*/
+template <typename PT>
+void make_dec_subintsplit_expr(PhysicalExpr& physical_expr, const ColumnView& column_view, InterpreterState& state) {
+	state.cur_operand = column_view.column_descriptor.encoding_rpn()->operand_tokens()->size() - 1;
+	physical_expr.operators.emplace_back(
+	    dec_physical_operator {make_shared<dec_subintsplit_opr<PT>>(physical_expr, column_view, state)});
 }
 
 /*--------------------------------------------------------------------------------------------------------------------*\
@@ -1014,6 +1025,14 @@ void Interpreter::Decoding::Interpret(const ColumnDescriptor& column_descriptor,
 		}
 		case EXP_FREQUENCY_I64: {
 			make_dec_frequency_expr<i64_pt>(physical_expr, column_view, state);
+			break;
+		}
+		case EXP_SUBINTSPLIT_I64: {
+			make_dec_subintsplit_expr<i64_pt>(physical_expr, column_view, state);
+			break;
+		}
+		case EXP_SUBINTSPLIT_I32: {
+			make_dec_subintsplit_expr<i32_pt>(physical_expr, column_view, state);
 			break;
 		}
 		case EXP_FREQUENCY_STR: {

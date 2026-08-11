@@ -28,6 +28,7 @@ add_library(fls_expression
         dec_rsum_operator.cpp
         scan_operator.cpp
         selection_ds.cpp
+        subintsplit_operator.cpp
         enc_slpatch_operator.cpp
         dec_slpatch_operator.cpp
         enc_transpose_operator.cpp

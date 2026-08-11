@@ -89,6 +89,10 @@ struct dec_frequency_opr;
 struct enc_frequency_str_opr;
 struct dec_frequency_str_opr;
 template <typename PT>
+struct enc_subintsplit_opr;
+template <typename PT>
+struct dec_subintsplit_opr;
+template <typename PT>
 struct enc_cross_rle_opr;
 template <typename PT>
 struct dec_cross_rle_opr;
@@ -184,6 +188,9 @@ using enc_physical_operator = variant<std::monostate,
                                       sp<enc_frequency_opr<i64_pt>>,
                                       sp<enc_frequency_opr<flt_pt>>,
                                       sp<enc_frequency_str_opr>,
+                                      // SUBINTSPLIT
+                                      sp<enc_subintsplit_opr<i64_pt>>,
+                                      sp<enc_subintsplit_opr<i32_pt>>,
                                       // RLE
                                       sp<struct enc_rle_map_opr<dbl_pt, u16_pt>>,
                                       sp<struct enc_rle_map_opr<flt_pt, u16_pt>>,
@@ -333,6 +340,9 @@ using dec_physical_operator = variant<std::monostate,
                                       sp<dec_frequency_opr<i64_pt>>,
                                       sp<dec_frequency_opr<flt_pt>>,
                                       sp<dec_frequency_str_opr>,
+                                      // SUBINTSPLIT
+                                      sp<dec_subintsplit_opr<i64_pt>>,
+                                      sp<dec_subintsplit_opr<i32_pt>>,
                                       // RLE
                                       sp<struct dec_rle_map_opr<dbl_pt, u16_pt>>,
                                       sp<struct dec_rle_map_opr<flt_pt, u16_pt>>,
