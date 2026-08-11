@@ -88,6 +88,16 @@ public:
 	                                                     "/data/generated/encodings/cross_rle_str"};
 	static constexpr std::string_view EXP_ALP_FLT {FLS_CMAKE_SOURCE_DIR "/data/generated/encodings/alp_flt"};
 	static constexpr std::string_view EXP_ALP_DBL {FLS_CMAKE_SOURCE_DIR "/data/generated/encodings/alp_dbl"};
+	static constexpr std::string_view SUBINTSPLIT_I64_EXPR {FLS_CMAKE_SOURCE_DIR
+	                                                        "/data/generated/encodings/subintsplit_i64"};
+
+	// SUBINTSPLIT BENCHMARK DATASETS
+	static constexpr std::string_view SUBINTSPLIT_SNOWFLAKE_I64 {FLS_CMAKE_SOURCE_DIR
+	                                                             "/data/generated/subintsplit/snowflake_i64"};
+	static constexpr std::string_view SUBINTSPLIT_TPCH_PARTKEY_I32 {FLS_CMAKE_SOURCE_DIR
+	                                                                "/data/generated/subintsplit/tpch_partkey_i32"};
+	static constexpr std::string_view SUBINTSPLIT_IPV4_I32 {FLS_CMAKE_SOURCE_DIR
+	                                                        "/data/generated/subintsplit/ipv4_i32"};
 
 	//
 	static constexpr std::string_view NUMBER_STRINGS {FLS_CMAKE_SOURCE_DIR "/data/generated/whitebox/number_strings"};
