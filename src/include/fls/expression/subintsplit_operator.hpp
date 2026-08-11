@@ -120,10 +120,13 @@ public:
 	void Gather(n_t vec_idx, const idx_t* rows, n_t n, PT* out);
 
 public:
-	// Row count at or above which Gather() decodes the vector instead of reaching per row. A member rather than a
-	// constant so the benchmark can sweep it: the crossover depends on section count and is worth measuring, not
-	// guessing.
-	n_t gather_decode_threshold {64};
+	// Row count at or above which Gather() decodes the vector instead of reaching per row.
+	//
+	// Measured crossover (benchmark/result/subintsplit): a 1-section plan crosses just past 64 rows, a 3-section plan
+	// between 64 and 256, because each extra section adds a scattered read per row but only one more sequential unffor
+	// to the decode. 128 sits inside both crossovers. It stays a member rather than a constant because no single value
+	// is right for every section count, and the benchmark sweeps it.
+	n_t gather_decode_threshold {128};
 	// Section s covers bits [bit_starts[s], bit_starts[s + 1) - 1], the last one up to 8 * sizeof(PT) - 1.
 	vector<bw_t>        bit_starts;
 	vector<SegmentView> bitpacked_segment_views;
