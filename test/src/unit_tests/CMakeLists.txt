@@ -10,6 +10,7 @@ add_executable(unit_test
         parse_timestamp_with_offset_test.cpp
         parse_timestamp_zulu_test.cpp
         sampling_layout_test.cpp
+        subintsplit_selector_test.cpp
         validitymask.cpp
 )
 
