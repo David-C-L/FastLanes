@@ -545,13 +545,28 @@ void bench_sis_paths(const DatasetSpec&          spec,
 
 		// Layout: the section boundaries, plus the per-section bit width as a MEDIAN over vectors. Vector 0 alone is
 		// not representative of a rowgroup.
+		//
+		// The DP selector runs once per column PER ROWGROUP, so different rowgroups of the same column can pick
+		// different section counts and boundaries -- the synthetic datasets happen to converge on one plan everywhere,
+		// but real data does not. Reading rowgroup rg's bw_segment_views[s] for s beyond ITS OWN section count is
+		// out-of-bounds, so bw_medians is only computed up to the minimum section count seen across all rowgroups, and
+		// any disagreement (in count or in boundaries) is surfaced via the same ";varies_by_rowgroup" convention
+		// schema_note uses, rather than silently reporting rowgroup 0's plan as if it were universal.
+		n_t  min_sections = oprs[0]->bit_starts.size();
+		bool varies       = false;
+		for (n_t rg {1}; rg < plan.layout.n_rowgroups; ++rg) {
+			min_sections = std::min(min_sections, oprs[rg]->bit_starts.size());
+			if (oprs[rg]->bit_starts != oprs[0]->bit_starts) {
+				varies = true;
+			}
+		}
 		const n_t      n_sections = oprs[0]->bit_starts.size();
 		vector<string> starts;
 		for (n_t s {0}; s < n_sections; ++s) {
 			starts.push_back(std::to_string(static_cast<n_t>(oprs[0]->bit_starts[s])));
 		}
 		vector<string> bw_medians;
-		for (n_t s {0}; s < n_sections; ++s) {
+		for (n_t s {0}; s < min_sections; ++s) {
 			vector<n_t> widths;
 			for (n_t rg {0}; rg < plan.layout.n_rowgroups; ++rg) {
 				for (n_t vec_idx {0}; vec_idx < plan.layout.n_vec[rg]; ++vec_idx) {
@@ -569,7 +584,8 @@ void bench_sis_paths(const DatasetSpec&          spec,
 		       static_cast<double>(n_sections),
 		       "sections",
 		       n_sections,
-		       "starts=" + join(starts, ";") + "|bw_med=" + join(bw_medians, ";"));
+		       "starts=" + join(starts, ";") + "|bw_med=" + join(bw_medians, ";") +
+		           (varies ? "|varies_by_rowgroup" : ""));
 
 		// Native point access: position arithmetic, no vector decode.
 		const double point_us = min_over(POINT_REPS, POINT_PROBES, [&] {
@@ -821,9 +837,16 @@ int main() {
 	    {"snowflake_i64", data_root + "/snowflake_i64", DataType::INT64},
 	    {"tpch_partkey_i32", data_root + "/tpch_partkey_i32", DataType::INT32},
 	    {"ipv4_i32", data_root + "/ipv4_i32", DataType::INT32},
+	    // Real Twitter snowflake IDs, not simulated. Optional: only present when
+	    // extract_real_snowflake.py has been run, since it needs the EncodingsPlayground parquet.
+	    {"snowflake_i64_real", data_root + "/snowflake_i64_real", DataType::INT64},
 	};
 
 	for (auto& spec : datasets) {
+		if (!std::filesystem::exists(path {spec.dir} / "generated.csv")) {
+			std::cout << "-- skipping " << spec.name << " (no dataset at " << spec.dir << ")" << std::endl;
+			continue;
+		}
 		spec.n_rows    = count_rows(path {spec.dir} / "generated.csv");
 		spec.raw_bytes = spec.n_rows * element_size(spec.type);
 		run_dataset(spec, make_row_specs(spec.type));

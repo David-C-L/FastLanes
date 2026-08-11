@@ -8,99 +8,139 @@ Regenerate with `scripts/run_subintsplit_tables.sh`.
 
 | Encoding | Ratio (×) | Encode (ms) | Bulk (ms/rg) | Gather n=1 | Gather n=4 | Gather n=16 | Gather n=64 | Gather n=256 | Gather n=1024 | Point (µs) | Encoding used |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
-| uncompressed | 1.00 | 491.1 | 0.001 | 0.064 | 0.101 | 0.128 | 0.623 | 1.166 | 1.812 | 0.065 | EXP_UNCOMPRESSED_I64 (INT64) |
+| uncompressed | 1.00 | 370.2 | 0.001 | 0.046 | 0.073 | 0.102 | 0.608 | 1.176 | 1.912 | 0.050 | EXP_UNCOMPRESSED_I64 (INT64) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| ffor | 2.11 | 346.7 | 0.054 | 1.153 | 1.240 | **1.106** | 1.188 | 1.567 | 2.357 | **1.182** | EXP_FFOR_I64 (INT64) |
-| delta | 2.17 | **270.2** | 0.055 | 6.265 | 6.407 | 6.461 | 7.499 | 7.608 | 8.937 | 8.720 | EXP_DELTA_I64 (INT64) |
-| ffor_slpatch | 2.11 | 27312.7 | **0.038** | **1.096** | **1.038** | 1.135 | **1.123** | **1.423** | **1.914** | 1.200 | EXP_FFOR_SLPATCH_I64 (INT64) |
-| subintsplit | **3.23** | 1547.7 | 0.126 | 4.110 | 4.132 | 4.136 | 4.315 | 4.766 | 5.653 | 3.787 | EXP_SUBINTSPLIT_I64 (INT64), 3 sections starts=0;12;22 |
+| ffor | 2.11 | 293.9 | 0.042 | 1.136 | 2.529 | 1.828 | 1.135 | **1.075** | **1.783** | **0.945** | EXP_FFOR_I64 (INT64) |
+| delta | 2.17 | **250.6** | 0.069 | 7.617 | 7.183 | 7.962 | 7.299 | 7.985 | 8.675 | 7.870 | EXP_DELTA_I64 (INT64) |
+| ffor_slpatch | 2.11 | 23410.0 | **0.037** | **0.937** | **0.960** | **1.022** | **1.045** | 1.141 | 1.924 | 1.006 | EXP_FFOR_SLPATCH_I64 (INT64) |
+| subintsplit | **3.23** | 1128.9 | 0.123 | 2.582 | 2.619 | 2.605 | 2.681 | 2.657 | 3.901 | 2.784 | EXP_SUBINTSPLIT_I64 (INT64), 3 sections starts=0;12;22 |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| FastLanes wizard (SIS available) | **3.23** | 6923.6 | 0.206 | **4.072** | **3.907** | **3.621** | **4.289** | **4.462** | **4.361** | **4.173** | EXP_SUBINTSPLIT_I64 (INT64), 3 sections starts=0;12;22 |
-| FastLanes wizard (SIS disabled) | 2.16 | **5740.4** | **0.074** | 7.306 | 7.082 | 6.908 | 7.558 | 7.342 | 8.112 | 7.516 | EXP_DELTA_I64;varies_by_rowgroup (INT64) |
+| FastLanes wizard (SIS available) | **3.23** | 5810.0 | 0.119 | **2.354** | **2.589** | **2.681** | **2.765** | **2.708** | **3.292** | **2.695** | EXP_SUBINTSPLIT_I64 (INT64), 3 sections starts=0;12;22 |
+| FastLanes wizard (SIS disabled) | 2.16 | **4879.2** | **0.053** | 5.991 | 6.552 | 6.095 | 6.286 | 6.663 | 7.326 | 6.563 | EXP_DELTA_I64;varies_by_rowgroup (INT64) |
 
 ### SubIntSplit native random access
 
 These are paths SubIntSplit *has* and the other encodings do not. They are a capability gap, not a like-for-like speed win: every other encoding reaches a single value by decoding the containing vector and indexing into it, so the comparable numbers are the `Point` and `Gather` columns of the main table. `Gather decoded` is the only row here that is measured the same way as those.
 
-`subintsplit` native point access (position arithmetic, no vector decode): 0.214 µs/probe
+`subintsplit` native point access (position arithmetic, no vector decode): 0.160 µs/probe
 
 | n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
 | ---: | ---: | ---: |
-| 1 | 0.196 | 3.821 |
-| 4 | 0.350 | 3.901 |
-| 16 | 0.762 | 3.897 |
-| 64 | 2.041 | 3.910 |
-| 256 | 6.885 | 4.165 |
-| 1024 | 25.618 | 4.505 |
+| 1 | 0.139 | 2.452 |
+| 4 | 0.253 | 2.664 |
+| 16 | 0.613 | 2.948 |
+| 64 | 1.737 | 2.493 |
+| 256 | 4.476 | 2.997 |
+| 1024 | 17.055 | 3.287 |
 
-`FastLanes wizard (SIS available)` native point access (position arithmetic, no vector decode): 0.186 µs/probe
+`FastLanes wizard (SIS available)` native point access (position arithmetic, no vector decode): 0.155 µs/probe
 
 | n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
 | ---: | ---: | ---: |
-| 1 | 0.177 | 3.176 |
-| 4 | 0.303 | 3.377 |
-| 16 | 0.636 | 3.808 |
-| 64 | 1.733 | 3.327 |
-| 256 | 5.874 | 3.024 |
-| 1024 | 16.122 | 3.060 |
+| 1 | 0.172 | 2.280 |
+| 4 | 0.268 | 2.204 |
+| 16 | 0.510 | 2.397 |
+| 64 | 1.258 | 2.393 |
+| 256 | 4.904 | 2.441 |
+| 1024 | 16.542 | 2.782 |
 
 ## tpch_partkey_i32
 
 | Encoding | Ratio (×) | Encode (ms) | Bulk (ms/rg) | Gather n=1 | Gather n=4 | Gather n=16 | Gather n=64 | Gather n=256 | Gather n=1024 | Point (µs) | Encoding used |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
-| uncompressed | 1.00 | 332.5 | 0.001 | 0.054 | 0.073 | 0.084 | 0.252 | 0.472 | 1.143 | 0.067 | EXP_UNCOMPRESSED_I32 (INT32) |
+| uncompressed | 1.00 | 309.8 | 0.001 | 0.056 | 0.082 | 0.096 | 0.267 | 0.506 | 1.088 | 0.049 | EXP_UNCOMPRESSED_I32 (INT32) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| ffor | **1.77** | **391.3** | **0.017** | **0.418** | **0.428** | **0.422** | **0.513** | **0.679** | **1.312** | **0.387** | EXP_FFOR_I32 (INT32) |
-| delta | 1.59 | 457.8 | 0.029 | 4.887 | 4.469 | 4.251 | 4.444 | 4.605 | 5.421 | 3.670 | EXP_DELTA_I32 (INT32) |
-| ffor_slpatch | 1.76 | 22376.5 | 0.025 | 0.697 | 0.725 | 0.644 | 0.650 | 0.838 | 1.585 | 0.639 | EXP_FFOR_SLPATCH_I32 (INT32) |
-| subintsplit | **1.77** | 410.5 | 0.039 | 0.668 | 0.763 | 0.837 | 1.009 | 1.069 | 1.532 | 0.812 | EXP_SUBINTSPLIT_I32 (INT32), 1 section starts=0 |
+| ffor | **1.77** | **333.8** | **0.016** | **0.538** | 0.645 | 0.536 | **0.547** | 0.829 | **1.279** | **0.490** | EXP_FFOR_I32 (INT32) |
+| delta | 1.59 | 391.2 | 0.038 | 4.236 | 4.163 | 4.901 | 4.300 | 4.906 | 5.498 | 4.957 | EXP_DELTA_I32 (INT32) |
+| ffor_slpatch | 1.76 | 19784.9 | 0.019 | 0.575 | **0.538** | **0.531** | 0.583 | **0.716** | 1.473 | 0.551 | EXP_FFOR_SLPATCH_I32 (INT32) |
+| subintsplit | **1.77** | 400.8 | 0.031 | 0.697 | 0.674 | 0.721 | 0.694 | 1.000 | 1.333 | 0.691 | EXP_SUBINTSPLIT_I32 (INT32), 1 section starts=0 |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| FastLanes wizard (SIS available) | **1.77** | 5420.7 | 0.027 | 0.432 | 0.466 | 0.530 | 0.634 | 0.962 | 1.529 | 0.526 | EXP_FFOR_I32 (INT32) |
-| FastLanes wizard (SIS disabled) | **1.77** | **5208.8** | **0.019** | **0.403** | **0.454** | **0.416** | **0.538** | **0.650** | **1.191** | **0.451** | EXP_FFOR_I32 (INT32) |
+| FastLanes wizard (SIS available) | **1.77** | 4477.6 | **0.015** | 0.453 | 0.446 | **0.404** | 0.554 | 0.705 | **1.140** | **0.425** | EXP_FFOR_I32 (INT32) |
+| FastLanes wizard (SIS disabled) | **1.77** | **4407.1** | 0.019 | **0.378** | **0.419** | 0.443 | **0.533** | **0.639** | 1.191 | 0.441 | EXP_FFOR_I32 (INT32) |
 
 ### SubIntSplit native random access
 
 These are paths SubIntSplit *has* and the other encodings do not. They are a capability gap, not a like-for-like speed win: every other encoding reaches a single value by decoding the containing vector and indexing into it, so the comparable numbers are the `Point` and `Gather` columns of the main table. `Gather decoded` is the only row here that is measured the same way as those.
 
-`subintsplit` native point access (position arithmetic, no vector decode): 0.075 µs/probe
+`subintsplit` native point access (position arithmetic, no vector decode): 0.062 µs/probe
 
 | n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
 | ---: | ---: | ---: |
-| 1 | 0.080 | 0.588 |
-| 4 | 0.153 | 0.713 |
-| 16 | 0.418 | 0.814 |
-| 64 | 1.228 | 0.818 |
-| 256 | 4.796 | 1.027 |
-| 1024 | 17.767 | 1.482 |
+| 1 | 0.072 | 0.570 |
+| 4 | 0.144 | 0.583 |
+| 16 | 0.305 | 0.536 |
+| 64 | 0.907 | 0.592 |
+| 256 | 4.211 | 0.929 |
+| 1024 | 14.628 | 1.394 |
 
 ## ipv4_i32
 
 | Encoding | Ratio (×) | Encode (ms) | Bulk (ms/rg) | Gather n=1 | Gather n=4 | Gather n=16 | Gather n=64 | Gather n=256 | Gather n=1024 | Point (µs) | Encoding used |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
-| uncompressed | 1.00 | 294.4 | 0.001 | 0.048 | 0.066 | 0.076 | 0.277 | 0.584 | 1.483 | 0.048 | EXP_UNCOMPRESSED_I32 (INT32) |
+| uncompressed | 1.00 | 250.4 | 0.001 | 0.048 | 0.069 | 0.091 | 0.308 | 0.573 | 1.085 | 0.047 | EXP_UNCOMPRESSED_I32 (INT32) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| ffor | **1.00** | 305.7 | **0.022** | **0.613** | **0.675** | **0.703** | **0.873** | **1.346** | 1.558 | **0.766** | EXP_FFOR_I32 (INT32) |
-| delta | 0.97 | **293.9** | 0.038 | 3.929 | 3.890 | 3.647 | 3.709 | 3.583 | 4.009 | 5.096 | EXP_DELTA_I32 (INT32) |
-| ffor_slpatch | **1.00** | 22014.0 | 0.033 | 0.744 | 0.682 | 0.771 | 0.976 | 1.423 | **1.545** | 0.896 | EXP_FFOR_SLPATCH_I32 (INT32) |
-| subintsplit | **1.00** | 376.5 | 0.037 | 1.126 | 1.132 | 1.157 | 1.340 | 1.535 | 2.547 | 1.103 | EXP_SUBINTSPLIT_I32 (INT32), 1 section starts=0 |
+| ffor | **1.00** | **242.4** | 0.032 | **0.593** | **0.691** | **0.733** | **0.671** | 1.038 | 1.859 | 0.653 | EXP_FFOR_I32 (INT32) |
+| delta | 0.97 | 246.7 | 0.030 | 3.868 | 4.517 | 3.948 | 3.958 | 4.376 | 4.930 | 4.325 | EXP_DELTA_I32 (INT32) |
+| ffor_slpatch | **1.00** | 18330.8 | **0.028** | 0.685 | 0.751 | 0.746 | 0.830 | **0.846** | **1.398** | **0.646** | EXP_FFOR_SLPATCH_I32 (INT32) |
+| subintsplit | **1.00** | 368.9 | 0.048 | 1.065 | 0.837 | 0.919 | 0.854 | 1.016 | 1.667 | 0.841 | EXP_SUBINTSPLIT_I32 (INT32), 1 section starts=0 |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| FastLanes wizard (SIS available) | **1.01** | 4959.5 | 0.013 | 6.359 | 6.444 | 6.480 | 6.684 | **6.830** | 7.943 | 3.966 | EXP_DICT_I32_FFOR_U16 (INT32) |
-| FastLanes wizard (SIS disabled) | **1.01** | **4806.9** | **0.012** | **5.087** | **6.405** | **6.401** | **6.570** | 7.023 | **7.713** | **3.727** | EXP_DICT_I32_FFOR_U16 (INT32) |
+| FastLanes wizard (SIS available) | **1.01** | 4327.9 | **0.013** | 4.320 | **3.627** | **3.501** | 4.149 | 4.458 | **4.362** | 4.331 | EXP_DICT_I32_FFOR_U16 (INT32) |
+| FastLanes wizard (SIS disabled) | **1.01** | **4033.3** | 0.015 | **3.917** | 4.294 | 3.626 | **3.632** | **4.391** | 4.431 | **4.202** | EXP_DICT_I32_FFOR_U16 (INT32) |
 
 ### SubIntSplit native random access
 
 These are paths SubIntSplit *has* and the other encodings do not. They are a capability gap, not a like-for-like speed win: every other encoding reaches a single value by decoding the containing vector and indexing into it, so the comparable numbers are the `Point` and `Gather` columns of the main table. `Gather decoded` is the only row here that is measured the same way as those.
 
-`subintsplit` native point access (position arithmetic, no vector decode): 0.079 µs/probe
+`subintsplit` native point access (position arithmetic, no vector decode): 0.083 µs/probe
 
 | n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
 | ---: | ---: | ---: |
-| 1 | 0.088 | 1.073 |
-| 4 | 0.112 | 1.131 |
-| 16 | 0.268 | 1.064 |
-| 64 | 0.677 | 1.206 |
-| 256 | 1.754 | 1.467 |
-| 1024 | 5.294 | 2.269 |
+| 1 | 0.084 | 1.106 |
+| 4 | 0.127 | 0.829 |
+| 16 | 0.188 | 0.852 |
+| 64 | 0.583 | 0.799 |
+| 256 | 1.345 | 0.999 |
+| 1024 | 3.202 | 1.474 |
+
+## snowflake_i64_real
+
+| Encoding | Ratio (×) | Encode (ms) | Bulk (ms/rg) | Gather n=1 | Gather n=4 | Gather n=16 | Gather n=64 | Gather n=256 | Gather n=1024 | Point (µs) | Encoding used |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| uncompressed | 1.00 | 387.1 | 0.001 | 0.065 | 0.116 | 0.127 | 0.528 | 0.959 | 1.693 | 0.062 | EXP_UNCOMPRESSED_I64 (INT64) |
+| ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
+| ffor | 1.29 | 396.1 | **0.060** | **0.967** | **0.936** | **0.963** | **1.038** | **1.246** | **1.811** | **1.115** | EXP_FFOR_I64 (INT64) |
+| delta | 1.43 | **383.9** | 0.088 | 7.173 | 7.098 | 6.730 | 7.481 | 8.322 | 8.067 | 7.953 | EXP_DELTA_I64 (INT64) |
+| ffor_slpatch | 1.28 | 21828.9 | 0.061 | 1.196 | 1.231 | 1.212 | 1.269 | 1.376 | 2.100 | 1.206 | EXP_FFOR_SLPATCH_I64 (INT64) |
+| subintsplit | **1.62** | 1248.3 | 0.175 | 3.415 | 3.128 | 3.179 | 3.018 | 3.649 | 3.799 | 3.655 | EXP_SUBINTSPLIT_I64 (INT64), 4 sections starts=0;12;17;22 |
+| ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
+| FastLanes wizard (SIS available) | **1.62** | 5864.8 | 0.166 | **3.349** | **3.429** | **3.937** | **3.262** | **3.369** | **4.232** | **3.789** | EXP_SUBINTSPLIT_I64 (INT64), 4 sections starts=0;12;17;22 |
+| FastLanes wizard (SIS disabled) | 1.43 | **4963.1** | **0.069** | 7.253 | 6.620 | 6.864 | 6.963 | 7.669 | 7.482 | 7.880 | EXP_DELTA_I64 (INT64) |
+
+### SubIntSplit native random access
+
+These are paths SubIntSplit *has* and the other encodings do not. They are a capability gap, not a like-for-like speed win: every other encoding reaches a single value by decoding the containing vector and indexing into it, so the comparable numbers are the `Point` and `Gather` columns of the main table. `Gather decoded` is the only row here that is measured the same way as those.
+
+`subintsplit` native point access (position arithmetic, no vector decode): 0.203 µs/probe
+
+| n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
+| ---: | ---: | ---: |
+| 1 | 0.196 | 3.379 |
+| 4 | 0.339 | 2.675 |
+| 16 | 0.722 | 2.901 |
+| 64 | 1.860 | 3.329 |
+| 256 | 6.204 | 2.892 |
+| 1024 | 24.474 | 3.661 |
+
+`FastLanes wizard (SIS available)` native point access (position arithmetic, no vector decode): 0.189 µs/probe
+
+| n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
+| ---: | ---: | ---: |
+| 1 | 0.226 | 2.661 |
+| 4 | 0.339 | 2.996 |
+| 16 | 0.704 | 3.196 |
+| 64 | 1.665 | 3.098 |
+| 256 | 6.469 | 3.465 |
+| 1024 | 24.908 | 5.018 |
 
 ## Notes
 
