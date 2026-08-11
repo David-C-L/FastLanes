@@ -9,8 +9,10 @@ compressing the integer as a whole. Every dataset here has that property by
 construction; uniform random integers deliberately do not, and would make the
 encoding look useless.
 
-All datasets are single-column, 65536 rows (= 64 vectors of 1024 = one full
-FastLanes rowgroup), stored as a headerless `generated.csv` plus a `schema.json`.
+All *committed* datasets are single-column, 65536 rows (= 64 vectors of 1024 =
+one full FastLanes rowgroup), stored as a headerless `generated.csv` plus a
+`schema.json`. Larger datasets for benchmarking are generated on demand into a
+scratch directory and are **not committed** — see [Regenerating](#regenerating).
 
 | Dataset | Type | Content |
 |---|---|---|
@@ -102,22 +104,41 @@ access to the 229 MB DB-IP source.
 ## Regenerating
 
 ```bash
-# exactly reproduces the committed CSVs (byte-identical)
+# exactly reproduces the committed CSVs (byte-identical), including
+# ../encodings/subintsplit_i64/
 python3 generate.py
-
-# larger datasets for deeper benchmarking (not committed — keep the PR reviewable)
-python3 generate.py --rows 1048576
 ```
 
-All RNGs are seeded, so a given `--rows` always produces the same bytes. Only
-the Python standard library is required.
+### Large datasets (`--out-dir`)
 
-To rebuild the IPv4 prefix pool from the DB-IP source:
+Benchmarks want 1048576-row inputs. Those are ~40 MB in total and are
+deliberately **not committed** — they would dwarf the rest of the repository and
+make every PR touching them unreviewable, and they are exactly reproducible from
+this script anyway. Generate them into a scratch directory instead:
+
+```bash
+python3 generate.py --out-dir /tmp/sis-big --rows 1048576
+```
+
+`--out-dir DIR` writes **only the three benchmark datasets** as
+`DIR/<name>/{generated.csv,schema.json}` — the same per-dataset layout as this
+directory, so anything that can read `data/generated/subintsplit/` can read `DIR`
+unchanged. Directories are created as needed, and nothing under `data/` is
+touched.
+
+`../encodings/subintsplit_i64/` is **not** written by an `--out-dir` run. It is a
+committed test fixture: `test/src/expression_tests/subintsplit_test.cpp` depends
+on it being exactly 65536 rows, so regenerating it at a different `--rows` would
+silently change what the test tests. The script therefore refuses `--rows` other
+than 65536 unless `--out-dir` is given; `--force` overrides this, but only use it
+if you genuinely intend to change the committed fixture (and then commit it).
+
+All RNGs are seeded, so a given `--rows` always produces the same bytes,
+regardless of the output directory. Only the Python standard library is required.
+
+### Rebuilding the IPv4 prefix pool
 
 ```bash
 python3 generate.py --rebuild-prefixes \
     --dbip /path/to/dbip-city-ipv4.csv
 ```
-
-Note that `generate.py` also writes `../encodings/subintsplit_i64/`, the
-correctness dataset, since it comes from the same generator.
