@@ -24,6 +24,7 @@
 #include "fls/std/vector.hpp"     // for vector
 #include "fls/table/rowgroup.hpp" // for Rowgroup, TypedCol (ptr ...
 #include "fls/wizard/sampling_layout.hpp"
+#include "fls/wizard/wizard_internal.hpp"
 #include <algorithm> // std::min_element
 #include <cstdint>   // int8_t, int16_t, int32_t, int64_t, uint8_t, uint16_t
 #include <cstring>
