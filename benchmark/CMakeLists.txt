@@ -33,3 +33,4 @@ target_link_libraries(bench_compression_time PUBLIC FastLanes::benchmarker)
 
 add_subdirectory(bench_galp)
 add_subdirectory(bench_subintsplit)
+add_subdirectory(bench_subintsplit_limited)

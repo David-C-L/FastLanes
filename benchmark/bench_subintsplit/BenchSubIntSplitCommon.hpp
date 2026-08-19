@@ -35,6 +35,7 @@
 #include "fls/connection.hpp"
 #include "fls/expression/decoding_operator.hpp"
 #include "fls/expression/dict_expression.hpp"
+#include "fls/expression/frequency_operator.hpp"
 #include "fls/expression/rle_expression.hpp"
 #include "fls/expression/rpn.hpp"
 #include "fls/expression/slpatch_operator.hpp"
@@ -82,16 +83,22 @@ uint64_t g_sink {0};
  * Row specification: what to measure, and how the writing Connection is configured for it.
 \*--------------------------------------------------------------------------------------------------------------------*/
 enum class Mode : uint8_t {
-	Forced,     // force_schema_pool({token}) -- one candidate, no wizard search
-	Wizard,     // plain default Connection -- FastLanes' own choice
-	WizardNoSis // default Connection minus both SubIntSplit tokens
+	Forced,            // force_schema_pool({token}) -- one candidate, no wizard search
+	Wizard,            // plain default Connection -- FastLanes' own choice
+	WizardNoSis,       // default Connection minus both SubIntSplit tokens
+	WizardLimited,     // default Connection minus RLE_slpatch/FFOR_slpatch/Delta/CrossRLE (both widths)
+	WizardLimitedNoSis // WizardLimited minus both SubIntSplit tokens
 };
 
 struct RowSpec {
-	string        group;
-	string        label;
-	Mode          mode;
-	OperatorToken token {OperatorToken::INVALID}; // only meaningful for Mode::Forced
+	string                group;
+	string                label;
+	Mode                  mode;
+	OperatorToken         token {OperatorToken::INVALID}; // only meaningful for Mode::Forced; ignored if tokens is set
+	vector<OperatorToken> tokens;                         // only meaningful for Mode::Forced: a multi-candidate pool,
+	                                                       // e.g. offering every Dictionary width variant and letting
+	                                                       // the wizard's evaluate_expressions() pick the cheapest one.
+	                                                       // Empty means "use token" (the single-candidate case).
 };
 
 struct DatasetSpec {
@@ -447,12 +454,38 @@ path write_fls(const DatasetSpec& spec, const RowSpec& row_spec, const path& out
 	conn.reset();
 	switch (row_spec.mode) {
 	case Mode::Forced:
-		conn.force_schema_pool({row_spec.token});
+		conn.force_schema_pool(row_spec.tokens.empty() ? vector<OperatorToken> {row_spec.token} : row_spec.tokens);
 		break;
 	case Mode::Wizard:
 		break; // the default candidate pool, i.e. what FastLanes would do on its own
 	case Mode::WizardNoSis:
 		// Cast() can narrow the column, so both widths have to go or the wizard just picks the other one.
+		conn.disable_encoding(OperatorToken::EXP_SUBINTSPLIT_I64);
+		conn.disable_encoding(OperatorToken::EXP_SUBINTSPLIT_I32);
+		break;
+	case Mode::WizardLimited:
+		// Limited codec-set comparison: keep only {RLE, Dictionary, FFOR, Uncompressed, Frequency, SubIntSplit} in the
+		// wizard's default pool by disabling the rest -- RLE_slpatch, FFOR_slpatch, Delta, CrossRLE. Cast() can narrow
+		// the column, so both widths of each disabled token have to go, exactly as WizardNoSis does above.
+		conn.disable_encoding(OperatorToken::EXP_RLE_I64_SLPATCH_U16);
+		conn.disable_encoding(OperatorToken::EXP_RLE_I32_SLPATCH_U16);
+		conn.disable_encoding(OperatorToken::EXP_FFOR_SLPATCH_I64);
+		conn.disable_encoding(OperatorToken::EXP_FFOR_SLPATCH_I32);
+		conn.disable_encoding(OperatorToken::EXP_DELTA_I64);
+		conn.disable_encoding(OperatorToken::EXP_DELTA_I32);
+		conn.disable_encoding(OperatorToken::EXP_CROSS_RLE_I64);
+		conn.disable_encoding(OperatorToken::EXP_CROSS_RLE_I32);
+		break;
+	case Mode::WizardLimitedNoSis:
+		// Same exclusions as WizardLimited, plus both SubIntSplit tokens.
+		conn.disable_encoding(OperatorToken::EXP_RLE_I64_SLPATCH_U16);
+		conn.disable_encoding(OperatorToken::EXP_RLE_I32_SLPATCH_U16);
+		conn.disable_encoding(OperatorToken::EXP_FFOR_SLPATCH_I64);
+		conn.disable_encoding(OperatorToken::EXP_FFOR_SLPATCH_I32);
+		conn.disable_encoding(OperatorToken::EXP_DELTA_I64);
+		conn.disable_encoding(OperatorToken::EXP_DELTA_I32);
+		conn.disable_encoding(OperatorToken::EXP_CROSS_RLE_I64);
+		conn.disable_encoding(OperatorToken::EXP_CROSS_RLE_I32);
 		conn.disable_encoding(OperatorToken::EXP_SUBINTSPLIT_I64);
 		conn.disable_encoding(OperatorToken::EXP_SUBINTSPLIT_I32);
 		break;
