@@ -8,143 +8,147 @@ Regenerate with `scripts/run_subintsplit_tables.sh`.
 
 | Encoding | Ratio (×) | Encode (ms) | Bulk (ms/rg) | Gather n=1 | Gather n=4 | Gather n=16 | Gather n=64 | Gather n=256 | Gather n=1024 | Point (µs) | Encoding used |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
-| uncompressed | 1.00 | 228.1 | 0.000 | 0.029 | 0.042 | 0.056 | 0.255 | 0.484 | 0.884 | 0.030 | EXP_UNCOMPRESSED_I64 (INT64) |
+| uncompressed | 1.00 | 597.2 | 0.001 | 0.036 | 0.053 | 0.076 | 0.325 | 0.534 | 0.998 | 0.037 | EXP_UNCOMPRESSED_I64 (INT64) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| ffor | 1.29 | **188.6** | 0.036 | **0.682** | **0.687** | **0.696** | **0.834** | **0.898** | **1.316** | **0.685** | EXP_FFOR_I64 (INT64) |
-| subintsplit | **1.62** | 659.2 | 0.098 | 1.792 | 1.871 | 1.794 | 1.837 | 1.940 | 2.276 | 1.771 | EXP_SUBINTSPLIT_I64 (INT64), 4 sections starts=0;12;17;22 |
-| rle | 0.97 | 200.7 | 0.006 | 3.889 | 4.039 | 4.758 | 5.589 | 4.996 | 4.979 | 3.875 | EXP_RLE_I64_U16 (INT64) |
-| dict | 0.89 | 386.4 | **0.004** | 4.082 | 3.447 | 3.145 | 3.127 | 3.203 | 3.508 | 3.411 | EXP_DICT_I64_FFOR_U08 (INT64) |
-| frequency | 0.80 | 194.0 | 0.057 | 4.259 | 3.732 | 3.677 | 3.681 | 3.786 | 4.480 | 3.615 | EXP_FREQUENCY_I64 (INT64) |
+| ffor | 1.29 | 589.7 | 0.028 | **0.584** | **0.559** | **0.578** | **0.607** | **0.745** | **1.097** | **0.516** | EXP_FFOR_I64 (INT64) |
+| ffor_slpatch | 1.28 | 22816.5 | 0.088 | 0.637 | 0.627 | 0.636 | 0.778 | 0.922 | 1.323 | 0.763 | EXP_FFOR_SLPATCH_I64 (INT64) |
+| subintsplit | **1.62** | 1368.4 | 0.293 | 1.775 | 1.789 | 1.792 | 1.881 | 1.940 | 2.293 | 1.775 | EXP_SUBINTSPLIT_I64 (INT64), 4 sections starts=0;12;17;22 |
+| rle | 0.97 | 602.9 | 0.008 | 4.974 | 5.581 | 8.661 | 10.560 | 12.185 | 13.274 | 5.734 | EXP_RLE_I64_U16 (INT64) |
+| dict | 0.89 | 1100.4 | **0.005** | 3.942 | 4.175 | 4.184 | 4.504 | 4.312 | 4.851 | 6.206 | EXP_DICT_I64_FFOR_U08 (INT64) |
+| frequency | 0.80 | **503.1** | 0.070 | 7.876 | 7.649 | 6.158 | 5.453 | 5.289 | 5.115 | 3.642 | EXP_FREQUENCY_I64 (INT64) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| wizard_limited_with_sis | **1.62** | 2036.1 | 0.125 | 1.781 | 1.786 | 1.781 | 1.841 | 1.942 | 2.281 | 1.771 | EXP_SUBINTSPLIT_I64 (INT64), 4 sections starts=0;12;17;22 |
-| wizard_limited_without_sis | 1.29 | **1511.3** | **0.027** | **0.531** | **0.532** | **0.540** | **0.594** | **0.701** | **1.017** | **0.530** | EXP_FFOR_I64 (INT64) |
+| wizard_limited_with_sis | **1.62** | 5687.2 | 0.288 | 3.655 | 3.814 | 3.695 | 4.302 | 4.411 | 4.571 | 2.149 | EXP_SUBINTSPLIT_I64 (INT64), 4 sections starts=0;12;17;22 |
+| wizard_limited_without_sis | 1.29 | **5113.9** | **0.092** | **1.789** | **1.887** | **1.792** | **1.986** | **2.669** | **3.138** | **1.984** | EXP_FFOR_I64 (INT64) |
 
 ### SubIntSplit native random access
 
 These are paths SubIntSplit *has* and the other encodings do not. They are a capability gap, not a like-for-like speed win: every other encoding reaches a single value by decoding the containing vector and indexing into it, so the comparable numbers are the `Point` and `Gather` columns of the main table. `Gather decoded` is the only row here that is measured the same way as those.
 
-`subintsplit` native point access (position arithmetic, no vector decode): 0.116 µs/probe
+`subintsplit` native point access (position arithmetic, no vector decode): 0.213 µs/probe
 
 | n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
 | ---: | ---: | ---: |
-| 1 | 0.122 | 1.666 |
-| 4 | 0.187 | 1.663 |
-| 16 | 0.408 | 1.670 |
-| 64 | 1.095 | 1.714 |
-| 256 | 3.755 | 1.800 |
-| 1024 | 14.267 | 2.091 |
+| 1 | 0.265 | 3.367 |
+| 4 | 0.459 | 3.124 |
+| 16 | 0.828 | 3.498 |
+| 64 | 2.364 | 3.702 |
+| 256 | 7.559 | 3.661 |
+| 1024 | 33.138 | 5.334 |
 
-`wizard_limited_with_sis` native point access (position arithmetic, no vector decode): 0.116 µs/probe
+`wizard_limited_with_sis` native point access (position arithmetic, no vector decode): 0.255 µs/probe
 
 | n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
 | ---: | ---: | ---: |
-| 1 | 0.122 | 1.652 |
-| 4 | 0.185 | 1.659 |
-| 16 | 0.390 | 1.671 |
-| 64 | 1.120 | 1.707 |
-| 256 | 3.726 | 1.793 |
-| 1024 | 14.321 | 2.093 |
+| 1 | 0.218 | 4.306 |
+| 4 | 0.467 | 4.371 |
+| 16 | 0.989 | 4.661 |
+| 64 | 3.112 | 5.070 |
+| 256 | 10.703 | 5.487 |
+| 1024 | 40.477 | 5.866 |
 
 ## snowflake_i64 (synthetic reference)
 
 | Encoding | Ratio (×) | Encode (ms) | Bulk (ms/rg) | Gather n=1 | Gather n=4 | Gather n=16 | Gather n=64 | Gather n=256 | Gather n=1024 | Point (µs) | Encoding used |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
-| uncompressed | 1.00 | 160.1 | 0.000 | 0.026 | 0.039 | 0.053 | 0.227 | 0.415 | 0.798 | 0.027 | EXP_UNCOMPRESSED_I64 (INT64) |
+| uncompressed | 1.00 | 159.3 | 0.001 | 0.079 | 0.107 | 0.151 | 0.545 | 1.301 | 2.551 | 0.086 | EXP_UNCOMPRESSED_I64 (INT64) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| ffor | 2.11 | **126.1** | 0.023 | **0.477** | **0.486** | **0.489** | **0.559** | **0.670** | **1.067** | **0.486** | EXP_FFOR_I64 (INT64) |
-| subintsplit | **3.23** | 1037.8 | 0.129 | 2.798 | 2.643 | 3.291 | 2.927 | 3.151 | 4.320 | 2.612 | EXP_SUBINTSPLIT_I64 (INT64), 3 sections starts=0;12;22 |
-| rle | 0.97 | 135.0 | 0.007 | 4.361 | 3.960 | 3.948 | 4.006 | 4.090 | 4.406 | 3.992 | EXP_RLE_I64_U16 (INT64) |
-| dict | 0.89 | 246.5 | **0.004** | 3.580 | 3.649 | 3.514 | 3.774 | 3.437 | 3.890 | 4.104 | EXP_DICT_I64_FFOR_U08 (INT64) |
-| frequency | 0.80 | 145.9 | 0.051 | 3.964 | 5.000 | 4.656 | 4.585 | 5.703 | 6.012 | 3.865 | EXP_FREQUENCY_I64 (INT64) |
+| ffor | 2.11 | 337.7 | 0.024 | **0.430** | **0.433** | **0.444** | **0.541** | **0.584** | **0.923** | **0.435** | EXP_FFOR_I64 (INT64) |
+| ffor_slpatch | 2.11 | 23325.7 | 0.040 | 0.567 | 0.570 | 0.553 | 0.648 | 0.714 | 1.086 | 0.583 | EXP_FFOR_SLPATCH_I64 (INT64) |
+| subintsplit | **3.23** | 1159.5 | 0.217 | 2.115 | 2.191 | 2.041 | 2.092 | 2.204 | 2.404 | 1.896 | EXP_SUBINTSPLIT_I64 (INT64), 3 sections starts=0;12;22 |
+| rle | 0.97 | **158.5** | 0.016 | 6.737 | 7.228 | 8.954 | 8.695 | 10.600 | 13.314 | 3.955 | EXP_RLE_I64_U16 (INT64) |
+| dict | 0.89 | 300.9 | **0.010** | 3.036 | 3.032 | 3.037 | 3.088 | 3.177 | 3.472 | 3.013 | EXP_DICT_I64_FFOR_U08 (INT64) |
+| frequency | 0.80 | 340.0 | 0.162 | 10.500 | 10.689 | 10.657 | 11.107 | 11.716 | 11.887 | 4.338 | EXP_FREQUENCY_I64 (INT64) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| wizard_limited_with_sis | **3.23** | 2112.3 | 0.078 | 2.240 | 1.796 | 2.255 | 1.843 | 1.951 | 2.387 | 1.824 | EXP_SUBINTSPLIT_I64 (INT64), 3 sections starts=0;12;22 |
-| wizard_limited_without_sis | 2.11 | **1649.5** | **0.021** | **0.457** | **0.435** | **0.442** | **0.498** | **0.589** | **0.932** | **0.460** | EXP_FFOR_I64 (INT64) |
+| wizard_limited_with_sis | **3.23** | 5669.7 | 0.212 | 3.927 | 3.652 | 3.008 | 2.612 | 3.702 | 3.765 | 4.139 | EXP_SUBINTSPLIT_I64 (INT64), 3 sections starts=0;12;22 |
+| wizard_limited_without_sis | 2.11 | **4919.6** | **0.054** | **1.278** | **1.320** | **1.306** | **1.427** | **1.824** | **2.595** | **1.460** | EXP_FFOR_I64 (INT64) |
 
 ### SubIntSplit native random access
 
 These are paths SubIntSplit *has* and the other encodings do not. They are a capability gap, not a like-for-like speed win: every other encoding reaches a single value by decoding the containing vector and indexing into it, so the comparable numbers are the `Point` and `Gather` columns of the main table. `Gather decoded` is the only row here that is measured the same way as those.
 
-`subintsplit` native point access (position arithmetic, no vector decode): 0.208 µs/probe
+`subintsplit` native point access (position arithmetic, no vector decode): 0.102 µs/probe
 
 | n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
 | ---: | ---: | ---: |
-| 1 | 0.178 | 2.833 |
-| 4 | 0.314 | 2.800 |
-| 16 | 0.583 | 2.387 |
-| 64 | 1.372 | 2.516 |
-| 256 | 4.491 | 3.448 |
-| 1024 | 16.581 | 3.063 |
+| 1 | 0.103 | 1.672 |
+| 4 | 0.166 | 1.563 |
+| 16 | 0.319 | 1.429 |
+| 64 | 0.844 | 1.630 |
+| 256 | 3.315 | 1.954 |
+| 1024 | 10.121 | 1.758 |
 
-`wizard_limited_with_sis` native point access (position arithmetic, no vector decode): 0.113 µs/probe
+`wizard_limited_with_sis` native point access (position arithmetic, no vector decode): 0.112 µs/probe
 
 | n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
 | ---: | ---: | ---: |
-| 1 | 0.110 | 1.589 |
-| 4 | 0.168 | 1.443 |
-| 16 | 0.288 | 1.336 |
-| 64 | 0.728 | 1.413 |
-| 256 | 2.498 | 1.467 |
-| 1024 | 9.203 | 1.835 |
+| 1 | 0.110 | 2.117 |
+| 4 | 0.223 | 2.026 |
+| 16 | 0.489 | 2.157 |
+| 64 | 1.333 | 2.230 |
+| 256 | 3.103 | 1.716 |
+| 1024 | 11.555 | 2.067 |
 
 ## tpch_partkey_i32
 
 | Encoding | Ratio (×) | Encode (ms) | Bulk (ms/rg) | Gather n=1 | Gather n=4 | Gather n=16 | Gather n=64 | Gather n=256 | Gather n=1024 | Point (µs) | Encoding used |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
-| uncompressed | 1.00 | 160.9 | 0.000 | 0.034 | 0.037 | 0.046 | 0.127 | 0.250 | 0.561 | 0.027 | EXP_UNCOMPRESSED_I32 (INT32) |
+| uncompressed | 1.00 | 201.5 | 0.000 | 0.029 | 0.038 | 0.046 | 0.120 | 0.283 | 0.651 | 0.027 | EXP_UNCOMPRESSED_I32 (INT32) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| ffor | **1.77** | 188.3 | 0.011 | **0.241** | **0.233** | **0.235** | **0.282** | **0.375** | **0.662** | **0.240** | EXP_FFOR_I32 (INT32) |
-| subintsplit | **1.77** | 211.3 | 0.018 | 0.394 | 0.389 | 0.401 | 0.442 | 0.543 | 0.854 | 0.409 | EXP_SUBINTSPLIT_I32 (INT32), 1 section starts=0 |
-| rle | 0.94 | 164.5 | 0.008 | 4.441 | 4.307 | 4.254 | 4.079 | 3.579 | 5.346 | 2.399 | EXP_RLE_I32_U16 (INT32) |
-| dict | 0.98 | 309.3 | **0.005** | 2.985 | 2.826 | 2.735 | 3.337 | 2.954 | 3.375 | 2.145 | EXP_DICT_I32_FFOR_U08 (INT32) |
-| frequency | 0.67 | **159.1** | 0.037 | 3.535 | 3.574 | 3.167 | 3.138 | 3.770 | 3.935 | 2.016 | EXP_FREQUENCY_I32 (INT32) |
+| ffor | **1.77** | 371.4 | 0.032 | 0.663 | 0.687 | 0.661 | 0.740 | 1.053 | 1.922 | 0.728 | EXP_FFOR_I32 (INT32) |
+| ffor_slpatch | 1.76 | 20463.7 | 0.034 | 0.784 | 0.807 | 0.776 | 0.908 | 1.194 | 2.158 | 0.867 | EXP_FFOR_SLPATCH_I32 (INT32) |
+| subintsplit | **1.77** | 589.5 | 0.020 | **0.399** | **0.407** | **0.407** | **0.457** | **0.582** | **0.900** | **0.422** | EXP_SUBINTSPLIT_I32 (INT32), 1 section starts=0 |
+| rle | 0.94 | 504.7 | **0.008** | 6.868 | 6.810 | 6.787 | 7.049 | 7.282 | 8.065 | 2.416 | EXP_RLE_I32_U16 (INT32) |
+| dict | 0.98 | 411.8 | **0.008** | 1.891 | 1.885 | 1.891 | 1.931 | 2.127 | 2.581 | 1.968 | EXP_DICT_I32_FFOR_U08 (INT32) |
+| frequency | 0.67 | **196.7** | 0.109 | 2.190 | 2.198 | 2.191 | 2.214 | 2.253 | 2.857 | 2.374 | EXP_FREQUENCY_I32 (INT32) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| wizard_limited_with_sis | **1.77** | **1349.8** | 0.013 | **0.302** | **0.287** | **0.288** | **0.331** | **0.448** | **0.814** | **0.291** | EXP_FFOR_I32 (INT32) |
-| wizard_limited_without_sis | **1.77** | 1408.9 | **0.011** | 0.350 | 0.354 | 0.332 | 0.430 | 0.593 | 1.056 | 0.297 | EXP_FFOR_I32 (INT32) |
+| wizard_limited_with_sis | **1.77** | 4729.4 | **0.015** | **0.260** | **0.263** | **0.278** | 0.332 | 0.477 | 0.854 | **0.278** | EXP_FFOR_I32 (INT32) |
+| wizard_limited_without_sis | **1.77** | **4709.5** | 0.020 | 0.288 | 0.289 | 0.297 | **0.331** | **0.466** | **0.822** | 0.288 | EXP_FFOR_I32 (INT32) |
 
 ### SubIntSplit native random access
 
 These are paths SubIntSplit *has* and the other encodings do not. They are a capability gap, not a like-for-like speed win: every other encoding reaches a single value by decoding the containing vector and indexing into it, so the comparable numbers are the `Point` and `Gather` columns of the main table. `Gather decoded` is the only row here that is measured the same way as those.
 
-`subintsplit` native point access (position arithmetic, no vector decode): 0.041 µs/probe
+`subintsplit` native point access (position arithmetic, no vector decode): 0.042 µs/probe
 
 | n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
 | ---: | ---: | ---: |
-| 1 | 0.046 | 0.329 |
-| 4 | 0.090 | 0.348 |
-| 16 | 0.193 | 0.351 |
-| 64 | 0.610 | 0.383 |
-| 256 | 2.370 | 0.513 |
-| 1024 | 9.521 | 0.832 |
+| 1 | 0.060 | 0.326 |
+| 4 | 0.086 | 0.346 |
+| 16 | 0.197 | 0.340 |
+| 64 | 0.623 | 0.398 |
+| 256 | 2.424 | 0.501 |
+| 1024 | 9.101 | 0.761 |
 
 ## ipv4_i32
 
 | Encoding | Ratio (×) | Encode (ms) | Bulk (ms/rg) | Gather n=1 | Gather n=4 | Gather n=16 | Gather n=64 | Gather n=256 | Gather n=1024 | Point (µs) | Encoding used |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
-| uncompressed | 1.00 | 138.9 | 0.000 | 0.026 | 0.034 | 0.045 | 0.124 | 0.236 | 0.547 | 0.025 | EXP_UNCOMPRESSED_I32 (INT32) |
+| uncompressed | 1.00 | 361.4 | 0.001 | 0.074 | 0.094 | 0.122 | 0.407 | 0.809 | 1.726 | 0.070 | EXP_UNCOMPRESSED_I32 (INT32) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| ffor | 1.00 | 146.4 | 0.017 | 0.426 | 0.427 | **0.398** | **0.449** | 0.581 | 0.981 | 0.451 | EXP_FFOR_I32 (INT32) |
-| subintsplit | 1.00 | 180.9 | 0.018 | **0.391** | **0.404** | 0.404 | **0.449** | **0.550** | **0.808** | **0.392** | EXP_SUBINTSPLIT_I32 (INT32), 1 section starts=0 |
-| rle | 0.95 | **129.1** | **0.007** | 2.551 | 2.876 | 2.627 | 3.466 | 3.139 | 3.370 | 2.637 | EXP_RLE_I32_U16 (INT32) |
-| dict | **1.27** | 368.7 | **0.007** | 1.797 | 1.796 | 1.799 | 1.843 | 1.923 | 2.170 | 1.724 | EXP_DICT_I32_FFOR_U08 (INT32) |
-| frequency | 0.67 | 132.1 | 0.039 | 2.007 | 2.014 | 2.022 | 2.172 | 2.842 | 2.772 | 2.003 | EXP_FREQUENCY_I32 (INT32) |
+| ffor | 1.00 | 203.4 | 0.031 | 0.699 | 0.778 | 0.906 | 0.989 | 1.404 | 2.513 | 0.810 | EXP_FFOR_I32 (INT32) |
+| ffor_slpatch | 1.00 | 19306.5 | 0.014 | **0.391** | **0.415** | **0.421** | **0.491** | **0.681** | 1.314 | **0.345** | EXP_FFOR_SLPATCH_I32 (INT32) |
+| subintsplit | 1.00 | 391.0 | 0.017 | 0.558 | 0.555 | 0.612 | 0.747 | 1.150 | **1.299** | 0.407 | EXP_SUBINTSPLIT_I32 (INT32), 1 section starts=0 |
+| rle | 0.95 | **191.0** | 0.016 | 2.401 | 2.406 | 2.408 | 2.443 | 2.518 | 2.772 | 2.474 | EXP_RLE_I32_U16 (INT32) |
+| dict | **1.27** | 637.2 | **0.005** | 4.848 | 4.825 | 4.314 | 5.025 | 5.170 | 6.133 | 1.995 | EXP_DICT_I32_FFOR_U08 (INT32) |
+| frequency | 0.67 | 355.1 | 0.115 | 3.377 | 3.536 | 4.000 | 4.233 | 4.336 | 4.808 | 2.018 | EXP_FREQUENCY_I32 (INT32) |
 | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ | ━━━ |
-| wizard_limited_with_sis | **1.01** | **1379.0** | **0.009** | 4.235 | 3.827 | 3.740 | 4.351 | 5.388 | 4.997 | 2.214 | EXP_DICT_I32_FFOR_U16 (INT32) |
-| wizard_limited_without_sis | **1.01** | 2438.3 | 0.014 | **2.213** | **2.124** | **2.116** | **2.177** | **2.287** | **2.613** | **2.138** | EXP_DICT_I32_FFOR_U16 (INT32) |
+| wizard_limited_with_sis | **1.01** | **4259.0** | 0.020 | **4.668** | **4.731** | 7.204 | **5.230** | **5.638** | **6.562** | **2.044** | EXP_DICT_I32_FFOR_U16 (INT32) |
+| wizard_limited_without_sis | **1.01** | 4286.0 | **0.009** | 7.233 | 6.998 | **7.174** | 6.941 | 7.272 | 8.672 | 2.278 | EXP_DICT_I32_FFOR_U16 (INT32) |
 
 ### SubIntSplit native random access
 
 These are paths SubIntSplit *has* and the other encodings do not. They are a capability gap, not a like-for-like speed win: every other encoding reaches a single value by decoding the containing vector and indexing into it, so the comparable numbers are the `Point` and `Gather` columns of the main table. `Gather decoded` is the only row here that is measured the same way as those.
 
-`subintsplit` native point access (position arithmetic, no vector decode): 0.027 µs/probe
+`subintsplit` native point access (position arithmetic, no vector decode): 0.039 µs/probe
 
 | n | Gather pointwise (µs/gather) | Gather decoded (µs/gather) |
 | ---: | ---: | ---: |
-| 1 | 0.032 | 0.343 |
-| 4 | 0.039 | 0.360 |
-| 16 | 0.088 | 0.365 |
-| 64 | 0.249 | 0.399 |
-| 256 | 0.597 | 0.488 |
-| 1024 | 1.877 | 0.773 |
+| 1 | 0.037 | 0.470 |
+| 4 | 0.050 | 0.491 |
+| 16 | 0.110 | 0.491 |
+| 64 | 0.356 | 0.502 |
+| 256 | 0.763 | 0.573 |
+| 1024 | 2.169 | 1.715 |
 
 ## Notes
 
