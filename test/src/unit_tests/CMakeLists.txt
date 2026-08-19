@@ -11,6 +11,7 @@ add_executable(unit_test
         parse_timestamp_zulu_test.cpp
         sampling_layout_test.cpp
         subintsplit_selector_test.cpp
+        subintsplit_section_selector_test.cpp
         validitymask.cpp
 )
 
