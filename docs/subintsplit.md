@@ -261,6 +261,21 @@ them deterministically from fixed seeds into `bench-build/subintsplit-data`. The
 regenerated at another size; `generate.py` refuses to, because `test_subintsplit` depends on
 them.
 
+### Data source
+
+`snowflake_i64_real` — real Twitter snowflake IDs — is the headline SubIntSplit dataset; the
+synthetic `snowflake_i64` (same field layout, simulated) is a secondary reference, not the
+main result.
+
+`snowflake_i64_real` is produced by `data/generated/subintsplit/extract_real_snowflake.py`,
+which samples from `../../../EncodingsPlayground/Datasets/TwitterSnowflake/tweet_ids.parquet`
+relative to the FastLanes checkout root — a sibling `EncodingsPlayground` checkout, 30.7M rows,
+not committed to this repo — and requires `pyarrow`. `scripts/run_subintsplit_tables.sh` runs
+this step automatically, best-effort: if the parquet or `pyarrow` is missing, it prints a
+skip notice and the pipeline falls back to `snowflake_i64` instead. Get the real dataset by
+placing an `EncodingsPlayground` checkout containing that parquet file next to `FastLanes/` and
+installing `pyarrow`.
+
 Note: several *pre-existing* test failures in this repo are unrelated to SubIntSplit —
 datasets such as `data/generated/encodings/frequency_dbl` and
 `data/generated/single_columns/fls_str` ship a `schema.json` with no `generated.csv`, so those

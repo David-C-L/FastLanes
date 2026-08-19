@@ -166,9 +166,15 @@ if [[ "$SKIP_GENERATE" -eq 0 ]]    && { [[ "$FORCE_GENERATE" -eq 1 ]] || [[ ! -f
       echo "✔ real-world snowflake dataset written to $REAL_DIR"
     else
       echo "↷ real-world snowflake dataset unavailable (source parquet not found) – skipping"
+      echo "  snowflake_i64_real is FastLanes' default/headline SubIntSplit dataset;"
+      echo "  falling back to the synthetic snowflake_i64 reference dataset instead."
+      echo "  See 'Data source' under Reproducing in docs/subintsplit.md to get the real one."
     fi
   else
     echo "↷ pyarrow not installed – skipping the real-world snowflake dataset"
+    echo "  snowflake_i64_real is FastLanes' default/headline SubIntSplit dataset;"
+    echo "  falling back to the synthetic snowflake_i64 reference dataset instead."
+    echo "  See 'Data source' under Reproducing in docs/subintsplit.md to get the real one."
   fi
 fi
 
