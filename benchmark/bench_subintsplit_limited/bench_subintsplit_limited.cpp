@@ -4,8 +4,8 @@
 // benchmark/bench_subintsplit_limited/bench_subintsplit_limited.cpp
 // ────────────────────────────────────────────────────────
 //
-// Measures SubIntSplit against a LIMITED codec set -- {uncompressed, RLE, Dictionary, FFOR, Frequency} -- rather than
-// the full wizard pool bench_subintsplit.cpp compares against. This isolates SubIntSplit's value against the codecs a
+// Measures SubIntSplit against a LIMITED codec set -- {uncompressed, RLE, Dictionary, FFOR, FFOR_slpatch, Frequency}
+// -- rather than the full wizard pool bench_subintsplit.cpp compares against. This isolates SubIntSplit's value against the codecs a
 // simpler / more conservative encoder would actually ship, and against FastLanes' own wizard restricted to the same
 // limited pool, with and without SubIntSplit in it.
 //
@@ -56,6 +56,10 @@ vector<RowSpec> make_row_specs(const DataType type) {
 	                                     OperatorToken::EXP_DICT_I32_FFOR_U16,
 	                                     OperatorToken::EXP_DICT_I32_FFOR_U08}},
 	    {"codec", "ffor", Mode::Forced, is_64 ? OperatorToken::EXP_FFOR_I64 : OperatorToken::EXP_FFOR_I32},
+	    {"codec",
+	     "ffor_slpatch",
+	     Mode::Forced,
+	     is_64 ? OperatorToken::EXP_FFOR_SLPATCH_I64 : OperatorToken::EXP_FFOR_SLPATCH_I32},
 	    {"codec",
 	     "frequency",
 	     Mode::Forced,

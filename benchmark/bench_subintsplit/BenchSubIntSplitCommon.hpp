@@ -86,7 +86,7 @@ enum class Mode : uint8_t {
 	Forced,            // force_schema_pool({token}) -- one candidate, no wizard search
 	Wizard,            // plain default Connection -- FastLanes' own choice
 	WizardNoSis,       // default Connection minus both SubIntSplit tokens
-	WizardLimited,     // default Connection minus RLE_slpatch/FFOR_slpatch/Delta/CrossRLE (both widths)
+	WizardLimited,     // default Connection minus RLE_slpatch/Delta/CrossRLE (both widths)
 	WizardLimitedNoSis // WizardLimited minus both SubIntSplit tokens
 };
 
@@ -464,13 +464,11 @@ path write_fls(const DatasetSpec& spec, const RowSpec& row_spec, const path& out
 		conn.disable_encoding(OperatorToken::EXP_SUBINTSPLIT_I32);
 		break;
 	case Mode::WizardLimited:
-		// Limited codec-set comparison: keep only {RLE, Dictionary, FFOR, Uncompressed, Frequency, SubIntSplit} in the
-		// wizard's default pool by disabling the rest -- RLE_slpatch, FFOR_slpatch, Delta, CrossRLE. Cast() can narrow
-		// the column, so both widths of each disabled token have to go, exactly as WizardNoSis does above.
+		// Limited codec-set comparison: keep only {RLE, Dictionary, FFOR, FFOR_slpatch, Uncompressed, Frequency,
+		// SubIntSplit} in the wizard's default pool by disabling the rest -- RLE_slpatch, Delta, CrossRLE. Cast() can
+		// narrow the column, so both widths of each disabled token have to go, exactly as WizardNoSis does above.
 		conn.disable_encoding(OperatorToken::EXP_RLE_I64_SLPATCH_U16);
 		conn.disable_encoding(OperatorToken::EXP_RLE_I32_SLPATCH_U16);
-		conn.disable_encoding(OperatorToken::EXP_FFOR_SLPATCH_I64);
-		conn.disable_encoding(OperatorToken::EXP_FFOR_SLPATCH_I32);
 		conn.disable_encoding(OperatorToken::EXP_DELTA_I64);
 		conn.disable_encoding(OperatorToken::EXP_DELTA_I32);
 		conn.disable_encoding(OperatorToken::EXP_CROSS_RLE_I64);
@@ -480,8 +478,6 @@ path write_fls(const DatasetSpec& spec, const RowSpec& row_spec, const path& out
 		// Same exclusions as WizardLimited, plus both SubIntSplit tokens.
 		conn.disable_encoding(OperatorToken::EXP_RLE_I64_SLPATCH_U16);
 		conn.disable_encoding(OperatorToken::EXP_RLE_I32_SLPATCH_U16);
-		conn.disable_encoding(OperatorToken::EXP_FFOR_SLPATCH_I64);
-		conn.disable_encoding(OperatorToken::EXP_FFOR_SLPATCH_I32);
 		conn.disable_encoding(OperatorToken::EXP_DELTA_I64);
 		conn.disable_encoding(OperatorToken::EXP_DELTA_I32);
 		conn.disable_encoding(OperatorToken::EXP_CROSS_RLE_I64);
