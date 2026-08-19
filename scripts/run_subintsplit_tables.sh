@@ -29,6 +29,8 @@ SKIP_BENCH=0
 FORCE_GENERATE=0
 
 RESULT_CSV="benchmark/result/subintsplit/subintsplit.csv"
+RESULT_CSV_LIMITED="benchmark/result/subintsplit/subintsplit_limited.csv"
+OUT_MD_LIMITED="tables/subintsplit_limited.md"
 GENERATOR="data/generated/subintsplit/generate.py"
 RENDERER="scripts/render_subintsplit_tables.py"
 DATASETS=(snowflake_i64 tpch_partkey_i32 ipv4_i32)
@@ -38,7 +40,9 @@ usage() {
 Usage: scripts/run_subintsplit_tables.sh [options]
 
 Generates the large SubIntSplit benchmark datasets, builds and runs the
-bench_subintsplit benchmark, and renders the Markdown result tables.
+bench_subintsplit benchmark (full codec comparison) and bench_subintsplit_limited
+(codecs restricted to RLE/Dictionary/FFOR/Uncompressed/Frequency/SubIntSplit), and
+renders both as Markdown result tables.
 
 Options:
   --rows N          Rows per generated dataset (default: 1048576 = 2^20).
@@ -91,12 +95,14 @@ fi
 
 DATA_DIR="$BUILD_DIR/subintsplit-data"
 BENCH_BIN="$BUILD_DIR/benchmark/bench_subintsplit/bench_subintsplit"
+BENCH_BIN_LIMITED="$BUILD_DIR/benchmark/bench_subintsplit_limited/bench_subintsplit_limited"
 
 # absolute forms (the benchmark is run from $REPO_ROOT, and the dataset root is
 # handed to it through the environment, so both must be unambiguous)
 abspath() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$REPO_ROOT/$1" ;; esac; }
 DATA_DIR_ABS="$(abspath "$DATA_DIR")"
 BENCH_BIN_ABS="$(abspath "$BENCH_BIN")"
+BENCH_BIN_LIMITED_ABS="$(abspath "$BENCH_BIN_LIMITED")"
 
 ################################################################################
 echo "── Step 1: guard FASTLANES_DATA_DIR ──────────────────────────────────"
@@ -202,31 +208,39 @@ fi
 
 ################################################################################
 echo
-echo "── Step 4: build target bench_subintsplit ────────────────────────────"
+echo "── Step 4: build bench_subintsplit and bench_subintsplit_limited ─────"
 ################################################################################
 if [[ "$SKIP_BUILD" -eq 1 ]]; then
-  echo "↷ --skip-build: reusing $BENCH_BIN"
+  echo "↷ --skip-build: reusing $BENCH_BIN and $BENCH_BIN_LIMITED"
 else
-  # Only this target: a full benchmark build is minutes of unrelated work.
-  cmake --build "$BUILD_DIR" --target bench_subintsplit --parallel
+  # Only these two targets: a full benchmark build is minutes of unrelated work.
+  cmake --build "$BUILD_DIR" --target bench_subintsplit bench_subintsplit_limited --parallel
   echo "✔ built $BENCH_BIN"
+  echo "✔ built $BENCH_BIN_LIMITED"
 fi
 
 ################################################################################
 echo
-echo "── Step 5: run bench_subintsplit ─────────────────────────────────────"
+echo "── Step 5: run bench_subintsplit and bench_subintsplit_limited ───────"
 ################################################################################
 if [[ "$SKIP_BENCH" -eq 1 ]]; then
-  echo "↷ --skip-bench: rendering the existing $RESULT_CSV"
+  echo "↷ --skip-bench: rendering the existing $RESULT_CSV and $RESULT_CSV_LIMITED"
 else
   if [[ ! -x "$BENCH_BIN_ABS" ]]; then
     echo "✖ benchmark binary not found (or not executable): $BENCH_BIN" >&2
     echo "  Re-run without --skip-build." >&2
     exit 1
   fi
+  if [[ ! -x "$BENCH_BIN_LIMITED_ABS" ]]; then
+    echo "✖ benchmark binary not found (or not executable): $BENCH_BIN_LIMITED" >&2
+    echo "  Re-run without --skip-build." >&2
+    exit 1
+  fi
   echo "   FLS_SUBINTSPLIT_DATA_DIR=$DATA_DIR_ABS"
   FLS_SUBINTSPLIT_DATA_DIR="$DATA_DIR_ABS" "$BENCH_BIN_ABS"
   echo "✔ results written to $RESULT_CSV"
+  FLS_SUBINTSPLIT_DATA_DIR="$DATA_DIR_ABS" "$BENCH_BIN_LIMITED_ABS"
+  echo "✔ results written to $RESULT_CSV_LIMITED"
 fi
 
 ################################################################################
@@ -238,10 +252,16 @@ if [[ ! -f "$RESULT_CSV" ]]; then
   echo "  Re-run without --skip-bench." >&2
   exit 1
 fi
+if [[ ! -f "$RESULT_CSV_LIMITED" ]]; then
+  echo "✖ no benchmark results at $RESULT_CSV_LIMITED" >&2
+  echo "  Re-run without --skip-bench." >&2
+  exit 1
+fi
 
 mkdir -p "$(dirname "$OUT_MD")"
 python3 "$RENDERER" --csv "$RESULT_CSV" --out "$OUT_MD"
+python3 "$RENDERER" --csv "$RESULT_CSV_LIMITED" --out "$OUT_MD_LIMITED"
 
 echo
-echo "✅  SubIntSplit tables written to $OUT_MD"
-echo "    ($ROWS rows/dataset · datasets $DATA_DIR · raw results $RESULT_CSV)"
+echo "✅  SubIntSplit tables written to $OUT_MD and $OUT_MD_LIMITED"
+echo "    ($ROWS rows/dataset · datasets $DATA_DIR · raw results $RESULT_CSV, $RESULT_CSV_LIMITED)"
