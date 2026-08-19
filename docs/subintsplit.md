@@ -243,6 +243,39 @@ entirely cache-resident and are not comparable with these.
 the wizard rows search the whole pool plus the dictionary pool and run `Cast()` and every
 pre-pass. The generated tables bold those two groups independently for this reason.
 
+## Limited codec-set comparison
+
+The tables above compare SubIntSplit against FastLanes' *entire* wizard pool — nine top-level
+candidates plus Dictionary's own three-way index-width search, several of which (Delta,
+`ffor_slpatch`, RLE with an SLP patch, cross-row RLE) are more elaborate than a conservative
+encoder would necessarily ship. `bench_subintsplit_limited` (same driver structure as
+`bench_subintsplit`, sharing all of its measurement code via
+`BenchSubIntSplitCommon.hpp`) restricts the field to six simpler, more familiar codecs:
+**RLE, Constant, Dictionary, FFOR, Uncompressed, FrequencyPartition** — plus SubIntSplit itself.
+This isolates SubIntSplit's contribution against codecs a smaller or more conservative encoder
+would actually have, rather than against FastLanes' full, more elaborate candidate pool.
+
+Mechanically: the per-codec forced rows (`uncompressed`, `rle`, `dict`, `ffor`, `frequency`,
+`subintsplit`) each use `Connection::force_schema_pool` with exactly that codec's token(s); the
+two wizard rows (`wizard_limited_with_sis`/`wizard_limited_without_sis`) use
+`Connection::disable_encoding` to remove everything from the default pool *outside* the six-codec
+set (`Delta`, `ffor_slpatch`, `RLE` with an SLP patch, cross-row RLE — both i32 and i64 widths),
+leaving the wizard to search only among the six.
+
+**Constant is not a forced row.** `force_schema_pool` cannot select `EXP_CONSTANT_I32/I64` — it
+bypasses the wizard's poolable-candidate path entirely (`constant_check` is an automatic
+structural pre-pass in `wizard.cpp` that runs *before* the candidate pool is even consulted, and
+is skipped altogether once a pool is forced). None of this benchmark's datasets are genuinely
+constant-valued, so a forced Constant row would be a no-op or a build-time error either way. It
+remains a real member of the six-codec set for the two wizard-limited rows, where it can still
+apply automatically to any column that happens to qualify — it simply cannot be exercised as its
+own forced comparison row here.
+
+Full results: **[`tables/subintsplit_limited.md`](../tables/subintsplit_limited.md)**, generated
+by the same `scripts/run_subintsplit_tables.sh` that produces the main table above. Raw numbers
+land in `benchmark/result/subintsplit/subintsplit_limited.csv`. The same comparability caveats
+from [Reading these numbers honestly](#reading-these-numbers-honestly) apply unchanged.
+
 ## Divergences from the Nimble implementation
 
 | | Nimble | Here | Why |
@@ -313,8 +346,10 @@ tests fail with "csv file is not found" on a clean checkout.
 | `src/include/fls/expression/subintsplit_operator.hpp` | operator declarations, storage layout |
 | `src/expression/subintsplit_operator.cpp` | encode, decode, point, gather |
 | `src/include/fls/primitive/unffor_single.hpp` | single-value unpack |
-| `benchmark/bench_subintsplit/` | benchmark driver |
-| `scripts/run_subintsplit_tables.sh` | generate + build + run + render |
+| `benchmark/bench_subintsplit/` | benchmark driver + shared harness (`BenchSubIntSplitCommon.hpp`) |
+| `benchmark/bench_subintsplit_limited/` | limited codec-set benchmark driver |
+| `scripts/run_subintsplit_tables.sh` | generate + build + run + render (both benchmark binaries) |
 | `scripts/render_subintsplit_tables.py` | Markdown table generator |
 | `tables/subintsplit.md` | generated comparison tables |
+| `tables/subintsplit_limited.md` | generated limited codec-set comparison tables |
 | `data/generated/subintsplit/` | datasets and generator |
