@@ -46,7 +46,7 @@ DIVIDER_CELL = "━━━"  # heavy horizontal, U+2501
 
 # Presentation order. Anything the CSV mentions that is not listed here is kept
 # and appended after the known entries rather than silently dropped.
-DATASET_ORDER = ["snowflake_i64", "tpch_partkey_i32", "ipv4_i32"]
+DATASET_ORDER = ["snowflake_i64_real", "snowflake_i64", "tpch_partkey_i32", "ipv4_i32"]
 GROUP_ORDER = ["baseline", "codec", "wizard"]
 
 # The baseline group is never bolded: an uncompressed row "winning" a decode
@@ -76,7 +76,8 @@ ROW_LABEL = {
 }
 
 DATASET_LABEL = {
-    "snowflake_i64": "snowflake_i64",
+    "snowflake_i64_real": "snowflake_i64 (real)",
+    "snowflake_i64": "snowflake_i64 (synthetic reference)",
     "tpch_partkey_i32": "tpch_partkey_i32",
     "ipv4_i32": "ipv4_i32",
 }

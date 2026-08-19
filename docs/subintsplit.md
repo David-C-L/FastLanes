@@ -161,6 +161,10 @@ because choosing the formula needs more columns than three.
 
 ## Results
 
+`snowflake_i64_real` is now the default/headline dataset (see [Data source](#data-source)
+above); the numbers immediately below still reflect the synthetic `snowflake_i64` dataset and
+will be regenerated against the real one in a later step.
+
 Full per-dataset tables, including the gather sweep and FastLanes' own wizard choice with and
 without SubIntSplit available, are generated into **[`tables/subintsplit.md`](../tables/subintsplit.md)**
 by `scripts/run_subintsplit_tables.sh`. Raw numbers land in

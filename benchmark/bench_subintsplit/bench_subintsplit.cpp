@@ -58,12 +58,15 @@ int main() {
 	std::cout << "dataset root: " << data_root << std::endl;
 
 	vector<DatasetSpec> datasets = {
+	    // Real Twitter snowflake IDs, not simulated. This is the headline dataset. Optional: only
+	    // present when extract_real_snowflake.py has been run, since it needs the
+	    // EncodingsPlayground parquet.
+	    {"snowflake_i64_real", data_root + "/snowflake_i64_real", DataType::INT64},
+	    // Synthetic snowflake IDs (same field layout, simulated). Secondary reference dataset,
+	    // kept for comparison against the real one above.
 	    {"snowflake_i64", data_root + "/snowflake_i64", DataType::INT64},
 	    {"tpch_partkey_i32", data_root + "/tpch_partkey_i32", DataType::INT32},
 	    {"ipv4_i32", data_root + "/ipv4_i32", DataType::INT32},
-	    // Real Twitter snowflake IDs, not simulated. Optional: only present when
-	    // extract_real_snowflake.py has been run, since it needs the EncodingsPlayground parquet.
-	    {"snowflake_i64_real", data_root + "/snowflake_i64_real", DataType::INT64},
 	};
 
 	for (auto& spec : datasets) {
