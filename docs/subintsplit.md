@@ -26,8 +26,10 @@ residual, and the residual of the *whole* value is wide because the low fields d
 SubIntSplit cuts each value into contiguous bit ranges and FFORs each range separately, per
 vector, with its own base and bit width. Each field then pays its own narrow width.
 
-On the snowflake dataset this is 3.23x compression against 2.17x for the best existing
-encoding, at 2^20 rows.
+On the real Twitter snowflake dataset (`snowflake_i64_real`) this is 1.62x compression against
+1.43x for the best existing encoding (delta), at 2^20 rows. The synthetic snowflake generator
+used before the real dataset was wired in shows a larger, structurally cleaner margin (3.23x
+against 2.17x) — see [Results](#results) for both, side by side.
 
 **Where it does nothing.** On TPC-H partkey and IPv4 the selector chooses a single section
 and the result is plain FFOR to within 3 bytes. This is the design working: absent
@@ -75,9 +77,13 @@ sum over sampled vectors of  1024 * bit_width(max - min)  of that bit range
 scaled to the full column. Nimble needs seven closed-form encoding-size models here; the port
 needs none, because the thing being predicted is directly computable.
 
-Validation: the selector estimated 19.31 bits/value for the snowflake column and the encoder
-achieved 19.6. It also recovers the true field boundaries from the data alone — on the real
-dataset it picks `bit_starts = [0, 12, 22]`, which is exactly the snowflake layout.
+Validation: on the synthetic snowflake column, the selector estimated 19.31 bits/value and the
+encoder achieved 19.6, and it recovers the assumed field boundaries from the data alone —
+`bit_starts = [0, 12, 22]`, exactly the synthetic generator's layout. On the real Twitter
+snowflake IDs (`snowflake_i64_real`) it settles on a 4-way split instead,
+`bit_starts = [0, 12, 17, 22]` — real IDs aren't as cleanly aligned to the idealized
+timestamp/machine/sequence boundary as the synthetic generator assumes, which the DP picks up on
+its own rather than needing to be told.
 
 ### Two things worth knowing before tuning it
 
@@ -161,39 +167,52 @@ because choosing the formula needs more columns than three.
 
 ## Results
 
-`snowflake_i64_real` is now the default/headline dataset (see [Data source](#data-source)
-above); the numbers immediately below still reflect the synthetic `snowflake_i64` dataset and
-will be regenerated against the real one in a later step.
+`snowflake_i64_real` is the default/headline dataset (see [Data source](#data-source) above).
+The numbers below are from it; the synthetic `snowflake_i64` column is kept as a secondary
+reference alongside it, since it isolates the encoding's behavior on a cleaner, idealized field
+layout than real IDs actually have.
 
 Full per-dataset tables, including the gather sweep and FastLanes' own wizard choice with and
 without SubIntSplit available, are generated into **[`tables/subintsplit.md`](../tables/subintsplit.md)**
 by `scripts/run_subintsplit_tables.sh`. Raw numbers land in
 `benchmark/result/subintsplit/subintsplit.csv`.
 
-Headline, snowflake IDs at 2²⁰ rows (1 048 576 rows, 16 rowgroups, ~8 MB raw):
+Headline, real Twitter snowflake IDs at 2²⁰ rows (1 048 576 rows, 16 rowgroups, ~8 MB raw):
 
 | encoding | ratio | bulk decode | point (decode+index) |
 |---|---|---|---|
-| ffor | 2.11× | 0.054 ms/rg | 1.18 µs |
-| delta | 2.17× | 0.055 ms/rg | 8.72 µs |
-| ffor_slpatch | 2.11× | 0.038 ms/rg | 1.20 µs |
-| **subintsplit** | **3.23×** | 0.126 ms/rg | 3.79 µs |
+| ffor | 1.29× | 0.026 ms/rg | 0.516 µs |
+| delta | 1.43× | 0.042 ms/rg | 3.968 µs |
+| ffor_slpatch | 1.28× | 0.083 ms/rg | 0.568 µs |
+| **subintsplit** | **1.62×** | 0.187 ms/rg | 1.785 µs |
 
-SubIntSplit's *native* point path reads 0.214 µs/probe — 18× faster than decoding its own
-vector, and 5.5× faster than FFOR's decode-then-index. See the comparability note below before
-quoting that number.
+The synthetic snowflake reference dataset, same row count, shows a larger margin:
 
-**The wizard picks SubIntSplit on its own.** With a default `Connection` it selects
-`EXP_SUBINTSPLIT_I64` for the snowflake column (3.23×); with `disable_encoding` applied to both
-SubIntSplit tokens it falls back to `EXP_DELTA_I64` at 2.16×. That ablation is what
-`Connection::disable_encoding` exists for.
+| encoding | ratio | bulk decode | point (decode+index) |
+|---|---|---|---|
+| ffor | 2.11× | 0.041 ms/rg | 1.047 µs |
+| delta | 2.17× | 0.027 ms/rg | 5.822 µs |
+| ffor_slpatch | 2.11× | 0.059 ms/rg | 1.166 µs |
+| **subintsplit** | **3.23×** | 0.070 ms/rg | 1.373 µs |
+
+SubIntSplit's *native* point path on the real dataset reads 0.156 µs/probe — 11.4× faster than
+decoding its own vector (1.785 µs), and 3.3× faster than FFOR's decode-then-index (0.516 µs). See
+the comparability note below before quoting either number.
+
+**The wizard picks SubIntSplit on its own**, on both datasets. On the real dataset, with a
+default `Connection` it selects `EXP_SUBINTSPLIT_I64` (1.62×); with `disable_encoding` applied to
+both SubIntSplit tokens it falls back to `EXP_DELTA_I64` at 1.43×. That ablation is what
+`Connection::disable_encoding` exists for. (On the synthetic dataset the same ablation is 3.23×
+against 2.16×.)
 
 TPC-H partkey and IPv4: the selector chooses a single section, so the result is plain FFOR plus
-48 bytes (16 rowgroups × a 3-byte layout header). On IPv4 the wizard prefers
-`EXP_DICT_I32_FFOR_U16` at 1.01× whether or not SubIntSplit is available.
+48 bytes (16 rowgroups × a 3-byte layout header) — unaffected by which snowflake dataset is
+default, since these are separate columns. On IPv4 the wizard prefers `EXP_DICT_I32_FFOR_U16` at
+1.01× whether or not SubIntSplit is available.
 
-Encode is ~4.5× slower than FFOR — the DP sweep runs once per column per rowgroup — though still
-far cheaper than `ffor_slpatch`.
+Encode is ~7.3× slower than FFOR on the real dataset (1319 ms vs 180 ms) — the DP sweep runs once
+per column per rowgroup — though still far cheaper than `ffor_slpatch`. The gap is smaller on the
+synthetic dataset (~4.5×, 949 ms vs 122 ms); not investigated further here.
 
 ### Reading these numbers honestly
 
@@ -209,8 +228,9 @@ SubIntSplit's position-arithmetic path is reported separately, in the native ran
 table, precisely because it is a *capability* gap rather than a faster implementation of the
 same operation. Three framings to keep in view:
 
-- native point access (0.214 µs) against decoding its own vector (3.79 µs): **18× faster**;
-- against FFOR's decode-then-index (1.18 µs): **5.5× faster** — but that is SubIntSplit doing a
+- native point access (0.156 µs, real dataset) against decoding its own vector (1.785 µs):
+  **11.4× faster**;
+- against FFOR's decode-then-index (0.516 µs): **3.3× faster** — but that is SubIntSplit doing a
   different, cheaper operation, not beating FFOR at the same one;
 - against a single-section FFOR column read *the same way*, splitting must **lose**, because K
   scattered reads cost more than one. Splitting buys compression on this path, not speed.
