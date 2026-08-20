@@ -22,7 +22,7 @@ constexpr n_t VEC_SZ = 1024;
 
 // A genuinely constant section: same value in every row of every vector.
 TEST(SubIntSplitSectionSelector, PicksConstant) {
-	const n_t          n_vec = 4;
+	const n_t           n_vec = 4;
 	std::vector<i64_pt> values(n_vec * VEC_SZ, 42);
 
 	const OperatorToken chosen = select_section_encoding<i64_pt>(values, n_vec);
@@ -30,7 +30,7 @@ TEST(SubIntSplitSectionSelector, PicksConstant) {
 }
 
 TEST(SubIntSplitSectionSelector, PicksConstantI32) {
-	const n_t          n_vec = 2;
+	const n_t           n_vec = 2;
 	std::vector<i32_pt> values(n_vec * VEC_SZ, -7);
 
 	const OperatorToken chosen = select_section_encoding<i32_pt>(values, n_vec);
@@ -63,10 +63,9 @@ TEST(SubIntSplitSectionSelector, PicksDictionaryOnLowCardinalityShuffled) {
 	const n_t           n_vec = 8;
 	std::vector<i64_pt> values;
 	values.reserve(n_vec * VEC_SZ);
-	std::mt19937_64                      rng {7};
-	constexpr int64_t                    distinct[16] = {10, 20, 30, 40, 50, 60, 70, 80,
-	                                                     90, 100, 110, 120, 130, 140, 150, 160};
-	std::uniform_int_distribution<int>   pick {0, 15};
+	std::mt19937_64   rng {7};
+	constexpr int64_t distinct[16] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160};
+	std::uniform_int_distribution<int> pick {0, 15};
 	for (n_t i {0}; i < n_vec * VEC_SZ; ++i) {
 		values.push_back(distinct[pick(rng)]);
 	}
@@ -80,8 +79,8 @@ TEST(SubIntSplitSectionSelector, PicksDictionaryOnLowCardinalityShuffled) {
 // One dominant value with rare exceptions scattered in: Frequency's exception-list design should
 // win over Dictionary/RLE/FFOR here.
 TEST(SubIntSplitSectionSelector, PicksFrequencyOnMostlyOneValue) {
-	const n_t           n_vec = 8;
-	std::vector<i64_pt> values(n_vec * VEC_SZ, 5);
+	const n_t                          n_vec = 8;
+	std::vector<i64_pt>                values(n_vec * VEC_SZ, 5);
 	std::mt19937_64                    rng {3};
 	std::uniform_int_distribution<n_t> pos {0, n_vec * VEC_SZ - 1};
 	std::uniform_int_distribution<int> exc {1000, 2000};

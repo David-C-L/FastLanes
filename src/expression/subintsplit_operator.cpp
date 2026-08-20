@@ -85,7 +85,8 @@ enc_subintsplit_opr<PT>::enc_subintsplit_opr(const PhysicalExpr& /*expr*/,
 	// Every section is EXP_FFOR_I64/I32 with operand count 3 for now -- the header format already
 	// carries a genuine per-section token/operand-count pair (see the file header comment), but
 	// Encode()/Decode() don't consult it yet.
-	section_tokens.assign(n_sections, std::is_same_v<PT, i64_pt> ? OperatorToken::EXP_FFOR_I64 : OperatorToken::EXP_FFOR_I32);
+	section_tokens.assign(n_sections,
+	                      std::is_same_v<PT, i64_pt> ? OperatorToken::EXP_FFOR_I64 : OperatorToken::EXP_FFOR_I32);
 	section_operand_counts.assign(n_sections, 3);
 
 	bitpacked_segments.reserve(n_sections);
@@ -153,7 +154,7 @@ void enc_subintsplit_opr<PT>::Finalize() {
 	header.reserve(1 + n_sections * 4);
 	header.push_back(static_cast<uint8_t>(n_sections));
 	for (n_t s {0}; s < n_sections; ++s) {
-		const auto     token       = static_cast<uint16_t>(section_tokens[s]);
+		const auto token = static_cast<uint16_t>(section_tokens[s]);
 		header.push_back(static_cast<uint8_t>(sections[s].bit_start));
 		header.push_back(static_cast<uint8_t>(token & 0xFF));
 		header.push_back(static_cast<uint8_t>((token >> 8) & 0xFF));

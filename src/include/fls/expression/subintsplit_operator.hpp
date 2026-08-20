@@ -139,14 +139,14 @@ public:
 	// is right for every section count, and the benchmark sweeps it.
 	n_t gather_decode_threshold {128};
 	// Section s covers bits [bit_starts[s], bit_starts[s + 1) - 1], the last one up to 8 * sizeof(PT) - 1.
-	vector<bw_t>           bit_starts;
+	vector<bw_t> bit_starts;
 	// Read back from the header; currently always EXP_FFOR_I64/I32 and 3 (see the file header comment).
 	vector<OperatorToken> section_tokens;
 	vector<uint8_t>       section_operand_counts;
-	vector<SegmentView> bitpacked_segment_views;
-	vector<SegmentView> base_segment_views;
-	vector<SegmentView> bw_segment_views;
-	SegmentView         header_segment_view;
+	vector<SegmentView>   bitpacked_segment_views;
+	vector<SegmentView>   base_segment_views;
+	vector<SegmentView>   bw_segment_views;
+	SegmentView           header_segment_view;
 	alignas(64) UT unffored_arr[CFG::VEC_SZ];
 	alignas(64) PT data[CFG::VEC_SZ];
 };

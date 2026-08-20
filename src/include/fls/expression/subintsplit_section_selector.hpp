@@ -33,8 +33,7 @@
 #include "fls/table/rowgroup.hpp"
 #include "fls/wizard/wizard_internal.hpp"
 
-namespace fastlanes {
-namespace subintsplit {
+namespace fastlanes { namespace subintsplit {
 
 namespace detail {
 
@@ -99,7 +98,7 @@ template <typename PT>
 [[nodiscard]] OperatorToken select_section_encoding(const vector<PT>& section_values, const n_t n_vec) {
 	FLS_ASSERT_G(section_values.size(), 0)
 
-	auto typed_col = make_unique<TypedCol<PT>>();
+	auto typed_col  = make_unique<TypedCol<PT>>();
 	typed_col->data = section_values;
 	typed_col->null_map_arr.assign(section_values.size(), 0);
 
@@ -146,17 +145,16 @@ template <typename PT>
 	const Connection con; // default: no disabled encodings, sample_size 0 (measure every vector)
 
 	for (const OperatorToken& token : detail::section_candidate_pool<PT>()) {
-		const n_t size = TryExpr(rowgroup, *column_descriptors[0], token, footer, con);
-		auto      res  = make_unique<ExpressionResultT>();
+		const n_t size      = TryExpr(rowgroup, *column_descriptors[0], token, footer, con);
+		auto      res       = make_unique<ExpressionResultT>();
 		res->operator_token = token;
-		res->size            = size;
+		res->size           = size;
 		column_descriptors[0]->expr_space.push_back(std::move(res));
 	}
 
 	return ChooseBestExpr(column_descriptors[0]->expr_space);
 }
 
-} // namespace subintsplit
-} // namespace fastlanes
+}} // namespace fastlanes::subintsplit
 
 #endif // FLS_EXPRESSION_SUBINTSPLIT_SECTION_SELECTOR_HPP
