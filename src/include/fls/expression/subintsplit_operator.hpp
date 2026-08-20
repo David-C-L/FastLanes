@@ -7,6 +7,7 @@
 #define FLS_EXPRESSION_SUBINTSPLIT_OPERATOR_HPP
 
 #include "fls/expression/subintsplit_selector.hpp"
+#include "fls/footer/operator_token_generated.h"
 #include "fls/reader/segment.hpp"
 #include "fls/std/type_traits.hpp"
 #include "fls/table/rowgroup.hpp"
@@ -26,13 +27,19 @@
  *     section K-1 : bitpacked | base | bitwidth
  *     header                                      (block-based, written once in Finalize)
  *
- * The header is `uint8_t n_sections` followed by n_sections bytes of bit_start. bit_end is implied: section s ends
- * where section s+1 starts, and the last section ends at 8 * sizeof(PT) - 1.
+ * The header is `uint8_t n_sections` followed by n_sections 4-byte records: bit_start (1B), the section's chosen
+ * OperatorToken (2B), and its operand count (1B). bit_end is implied: section s ends where section s+1 starts, and
+ * the last section ends at 8 * sizeof(PT) - 1. Every section's token is currently EXP_FFOR_I64/I32 with operand
+ * count 3 (the classic bitpacked|base|bitwidth triple) -- the format already carries a genuine per-section codec
+ * choice, but Encode()/Decode() don't act on it yet. See subintsplit_section_selector.hpp for the (already wired
+ * but not yet consulted) selector that will choose it in the next step.
  *
  * The header comes LAST on purpose. This is the only operator in the codebase with a *dynamic* segment count, so the
- * decoder cannot know how far to reach back until it has read K; putting the header at `cur_operand - 0` lets it read
- * K first, then index the 3K section segments below it, then rewind cur_operand by 3K + 1. Making it block-based keeps
- * PhysicalExpr::Size from charging the whole header against the sampled vectors during wizard selection.
+ * decoder cannot know how far to reach back until it has read K (and, once per-section codecs vary, each section's
+ * own operand count); putting the header at `cur_operand - 0` lets it read the header first, then index the section
+ * segments below it via a running prefix sum of persisted operand counts, then rewind cur_operand accordingly.
+ * Making it block-based keeps PhysicalExpr::Size from charging the whole header against the sampled vectors during
+ * wizard selection.
 \*--------------------------------------------------------------------------------------------------------------------*/
 
 namespace fastlanes {
@@ -66,6 +73,10 @@ public:
 	TypedColumnView<PT> col_viewer;
 	// The chosen partition of the sizeof(PT) * 8 bits, LSB-first, always tiling the whole width.
 	vector<subintsplit::SubIntSplitSegment> sections;
+	// One codec token + operand count per section, persisted in the header. Currently always
+	// EXP_FFOR_I64/I32 and 3 -- see the file header comment.
+	vector<OperatorToken> section_tokens;
+	vector<uint8_t>       section_operand_counts;
 	// One triple per section; sized from sections.size() in the constructor.
 	vector<up<Segment>> bitpacked_segments;
 	vector<up<Segment>> base_segments;
@@ -128,7 +139,10 @@ public:
 	// is right for every section count, and the benchmark sweeps it.
 	n_t gather_decode_threshold {128};
 	// Section s covers bits [bit_starts[s], bit_starts[s + 1) - 1], the last one up to 8 * sizeof(PT) - 1.
-	vector<bw_t>        bit_starts;
+	vector<bw_t>           bit_starts;
+	// Read back from the header; currently always EXP_FFOR_I64/I32 and 3 (see the file header comment).
+	vector<OperatorToken> section_tokens;
+	vector<uint8_t>       section_operand_counts;
 	vector<SegmentView> bitpacked_segment_views;
 	vector<SegmentView> base_segment_views;
 	vector<SegmentView> bw_segment_views;

@@ -81,6 +81,13 @@ enc_subintsplit_opr<PT>::enc_subintsplit_opr(const PhysicalExpr& /*expr*/,
 	FLS_ASSERT_FALSE(sections.empty())
 
 	const n_t n_sections = sections.size();
+
+	// Every section is EXP_FFOR_I64/I32 with operand count 3 for now -- the header format already
+	// carries a genuine per-section token/operand-count pair (see the file header comment), but
+	// Encode()/Decode() don't consult it yet.
+	section_tokens.assign(n_sections, std::is_same_v<PT, i64_pt> ? OperatorToken::EXP_FFOR_I64 : OperatorToken::EXP_FFOR_I32);
+	section_operand_counts.assign(n_sections, 3);
+
 	bitpacked_segments.reserve(n_sections);
 	base_segments.reserve(n_sections);
 	bitwidth_segments.reserve(n_sections);
@@ -140,11 +147,17 @@ void enc_subintsplit_opr<PT>::Encode() {
 
 template <typename PT>
 void enc_subintsplit_opr<PT>::Finalize() {
+	const n_t n_sections = sections.size();
+
 	vector<uint8_t> header;
-	header.reserve(sections.size() + 1);
-	header.push_back(static_cast<uint8_t>(sections.size()));
-	for (const auto& section : sections) {
-		header.push_back(static_cast<uint8_t>(section.bit_start));
+	header.reserve(1 + n_sections * 4);
+	header.push_back(static_cast<uint8_t>(n_sections));
+	for (n_t s {0}; s < n_sections; ++s) {
+		const auto     token       = static_cast<uint16_t>(section_tokens[s]);
+		header.push_back(static_cast<uint8_t>(sections[s].bit_start));
+		header.push_back(static_cast<uint8_t>(token & 0xFF));
+		header.push_back(static_cast<uint8_t>((token >> 8) & 0xFF));
+		header.push_back(section_operand_counts[s]);
 	}
 	header_segment->Flush(header.data(), header.size());
 }
@@ -178,23 +191,45 @@ dec_subintsplit_opr<PT>::dec_subintsplit_opr(PhysicalExpr& /*physical_expr*/,
 	FLS_ASSERT_NOT_ZERO(n_sections)
 
 	bit_starts.reserve(n_sections);
+	section_tokens.reserve(n_sections);
+	section_operand_counts.reserve(n_sections);
 	for (n_t s {0}; s < n_sections; ++s) {
-		bit_starts.push_back(static_cast<bw_t>(header[1 + s]));
+		const uint8_t* record = header + 1 + (4 * s);
+		bit_starts.push_back(static_cast<bw_t>(record[0]));
+		const auto token = static_cast<uint16_t>(record[1]) | (static_cast<uint16_t>(record[2]) << 8);
+		section_tokens.push_back(static_cast<OperatorToken>(token));
+		section_operand_counts.push_back(record[3]);
+		// Every section is EXP_FFOR_I64/I32 with operand count 3 for now (see the file header
+		// comment); Decode()/PointAccess()/Gather() below assume exactly that until the per-section
+		// dispatch lands.
+		FLS_ASSERT_E(section_operand_counts.back(), 3)
 	}
 
-	// Section triples occupy the 3 * n_sections operands directly below the header.
-	const n_t first_operand = state.cur_operand - (3 * n_sections);
+	const n_t operand_total = [&] {
+		n_t total {0};
+		for (const uint8_t count : section_operand_counts) {
+			total += count;
+		}
+		return total;
+	}();
+
+	// Section records occupy the operand_total operands directly below the header, at offsets given
+	// by the running prefix sum of each section's own operand count (currently a uniform stride of
+	// 3, but the format already supports it varying per section).
+	const n_t first_operand = state.cur_operand - operand_total;
 	bitpacked_segment_views.reserve(n_sections);
 	base_segment_views.reserve(n_sections);
 	bw_segment_views.reserve(n_sections);
+	n_t running_offset {0};
 	for (n_t s {0}; s < n_sections; ++s) {
-		const n_t triple = first_operand + (3 * s);
+		const n_t triple = first_operand + running_offset;
 		bitpacked_segment_views.push_back(column_view.GetSegment(operand_segment_idx(column_view, triple + 0)));
 		base_segment_views.push_back(column_view.GetSegment(operand_segment_idx(column_view, triple + 1)));
 		bw_segment_views.push_back(column_view.GetSegment(operand_segment_idx(column_view, triple + 2)));
+		running_offset += section_operand_counts[s];
 	}
 
-	state.cur_operand -= ((3 * n_sections) + 1);
+	state.cur_operand -= (operand_total + 1);
 }
 
 template <typename PT>
