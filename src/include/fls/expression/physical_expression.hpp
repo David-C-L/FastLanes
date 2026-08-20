@@ -16,6 +16,7 @@
 namespace fastlanes {
 /*--------------------------------------------------------------------------------------------------------------------*/
 class Buf;
+class Segment;
 struct ColumnDescriptorT;
 // DECODE
 template <typename PT>
@@ -508,6 +509,11 @@ public:
 	[[nodiscard]] n_t Size(n_t sample_size, n_t n_vecs) const;
 	//
 	void Finalize() const;
+	// Moves every operator's segments onto `segments`, in operator order. Reuses the same per-operator-type
+	// dispatch as Flush/Size (see extract_segments_visitor in physical_expression.cpp) without Flush's file-writing
+	// side effects -- for a nested child expression (e.g. one SubIntSplit section's own encoder) that needs its
+	// segments but is never itself Flushed to a file directly.
+	void MoveSegments(vector<up<Segment>>& segments) const;
 
 public:
 	n_t n_active_operators;

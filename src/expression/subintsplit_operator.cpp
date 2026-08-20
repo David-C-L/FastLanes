@@ -8,8 +8,16 @@
 #include "fls/common/alias.hpp"
 #include "fls/common/assert.hpp"
 #include "fls/expression/data_type.hpp"
+#include "fls/expression/decoding_operator.hpp"
+#include "fls/expression/dict_expression.hpp"
+#include "fls/expression/expression_executor.hpp"
+#include "fls/expression/frequency_operator.hpp"
 #include "fls/expression/interpreter.hpp"
 #include "fls/expression/physical_expression.hpp"
+#include "fls/expression/rle_expression.hpp"
+#include "fls/expression/rsum_operator.hpp"
+#include "fls/expression/slpatch_operator.hpp"
+#include "fls/expression/subintsplit_section_selector.hpp"
 #include "fls/ffor.hpp"
 #include "fls/primitive/bitpack/bitpack.hpp"
 #include "fls/primitive/copy/fls_copy.hpp"
@@ -22,6 +30,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstdint>
+#include <limits>
 #include <utility>
 
 namespace fastlanes {
@@ -44,6 +53,128 @@ uint32_t operand_segment_idx(const ColumnView& column_view, const n_t operand) {
 	const auto* operand_tokens = column_view.column_descriptor.encoding_rpn()->operand_tokens();
 	return static_cast<uint32_t>((*operand_tokens)[static_cast<uint32_t>(operand)]);
 }
+
+/*--------------------------------------------------------------------------------------------------------------------*\
+ * Builds one section's decode chain directly from its persisted token, bypassing interpreter_decoding.cpp's
+ * make_dec_X_expr layer: every one of those functions does
+ * `state.cur_operand = column_view.column_descriptor.encoding_rpn()->operand_tokens()->size() - 1`, i.e. assumes
+ * it's decoding the column's own sole top-level operator, not a nested child at some computed offset. The concrete
+ * operator constructors underneath that layer don't have this problem -- they read/decrement whatever
+ * `state.cur_operand` the caller hands them -- so this calls those directly, seeded with this section's own last
+ * operand index (see the .cpp header comment on operand indexing convention), exactly the same sequence
+ * make_dec_rle_expr/make_dec_dict_ffor_expr/etc. use internally.
+\*--------------------------------------------------------------------------------------------------------------------*/
+template <typename PT>
+sp<PhysicalExpr>
+build_section_decode_expr(const OperatorToken token, const ColumnView& column_view, InterpreterState& state) {
+	using UT  = make_unsigned_t<PT>;
+	auto expr = make_shared<PhysicalExpr>();
+
+	switch (token) {
+	case OperatorToken::EXP_UNCOMPRESSED_I64:
+	case OperatorToken::EXP_UNCOMPRESSED_I32: {
+		// dec_uncompressed_opr takes an already-resolved segment index rather than InterpreterState.
+		const auto segment_idx = operand_segment_idx(column_view, state.cur_operand);
+		expr->operators.emplace_back(
+		    dec_physical_operator {make_shared<dec_uncompressed_opr<PT>>(column_view, segment_idx)});
+		state.cur_operand -= 1;
+		break;
+	}
+	case OperatorToken::EXP_FFOR_I64:
+	case OperatorToken::EXP_FFOR_I32: {
+		expr->operators.emplace_back(dec_physical_operator {make_shared<dec_unffor_opr<UT>>(column_view, state)});
+		break;
+	}
+	case OperatorToken::EXP_FFOR_SLPATCH_I64:
+	case OperatorToken::EXP_FFOR_SLPATCH_I32: {
+		expr->operators.emplace_back(dec_physical_operator {make_shared<dec_unffor_opr<UT>>(column_view, state)});
+		expr->operators.emplace_back(
+		    dec_physical_operator {make_shared<dec_slpatch_opr<PT>>(*expr, column_view, state)});
+		break;
+	}
+	case OperatorToken::EXP_RLE_I64_U16:
+	case OperatorToken::EXP_RLE_I32_U16: {
+		expr->operators.emplace_back(dec_physical_operator {make_shared<dec_unffor_opr<u16_pt>>(column_view, state)});
+		expr->operators.emplace_back(
+		    dec_physical_operator {make_shared<dec_rsum_opr<u16_pt>>(*expr, column_view, state)});
+		expr->operators.emplace_back(
+		    dec_physical_operator {make_shared<dec_rle_map_opr<PT, u16_pt>>(*expr, column_view, state)});
+		break;
+	}
+	case OperatorToken::EXP_DICT_I64_FFOR_U08:
+	case OperatorToken::EXP_DICT_I32_FFOR_U08: {
+		expr->operators.emplace_back(dec_physical_operator {make_shared<dec_unffor_opr<u08_pt>>(column_view, state)});
+		expr->operators.emplace_back(
+		    dec_physical_operator {make_shared<dec_dict_opr<PT, u08_pt>>(*expr, column_view, state)});
+		break;
+	}
+	case OperatorToken::EXP_DICT_I64_FFOR_U16:
+	case OperatorToken::EXP_DICT_I32_FFOR_U16: {
+		expr->operators.emplace_back(dec_physical_operator {make_shared<dec_unffor_opr<u16_pt>>(column_view, state)});
+		expr->operators.emplace_back(
+		    dec_physical_operator {make_shared<dec_dict_opr<PT, u16_pt>>(*expr, column_view, state)});
+		break;
+	}
+	case OperatorToken::EXP_DICT_I64_FFOR_U32:
+	case OperatorToken::EXP_DICT_I32_FFOR_U32: {
+		expr->operators.emplace_back(dec_physical_operator {make_shared<dec_unffor_opr<u32_pt>>(column_view, state)});
+		expr->operators.emplace_back(
+		    dec_physical_operator {make_shared<dec_dict_opr<PT, u32_pt>>(*expr, column_view, state)});
+		break;
+	}
+	case OperatorToken::EXP_FREQUENCY_I64:
+	case OperatorToken::EXP_FREQUENCY_I32: {
+		expr->operators.emplace_back(
+		    dec_physical_operator {make_shared<dec_frequency_opr<PT>>(*expr, column_view, state)});
+		break;
+	}
+	default:
+		FLS_UNREACHABLE()
+	}
+
+	ExprExecutor::CountOperator(*expr);
+	return expr;
+}
+
+/*--------------------------------------------------------------------------------------------------------------------*\
+ * Pulls one already-smart_execute'd section's decoded vector out of its child chain's final operator, mirroring
+ * materializer.cpp's material_visitor (which this can't reuse directly -- it's file-local there, and keyed by
+ * column index into a real multi-column Rowgroup rather than a bare scratch buffer).
+\*--------------------------------------------------------------------------------------------------------------------*/
+template <typename PT>
+struct section_pull_visitor {
+	explicit section_pull_visitor(up<TypedCol<PT>>& a_typed_col)
+	    : typed_col(a_typed_col) {
+	}
+
+	void operator()(const sp<dec_uncompressed_opr<PT>>& opr) const {
+		for (n_t idx {0}; idx < CFG::VEC_SZ; ++idx) {
+			typed_col->data.push_back(opr->Data()[idx]);
+		}
+	}
+	void operator()(const sp<dec_slpatch_opr<PT>>& opr) const {
+		opr->Materialize(0, *typed_col);
+	}
+	void operator()(const sp<dec_frequency_opr<PT>>& opr) const {
+		opr->Materialize(0, *typed_col);
+	}
+	template <typename INDEX_PT>
+	void operator()(const sp<dec_rle_map_opr<PT, INDEX_PT>>& opr) const {
+		opr->Decode(0, typed_col->data);
+	}
+	template <typename INDEX_PT>
+	void operator()(const sp<dec_dict_opr<PT, INDEX_PT>>& opr) const {
+		const auto* key_p   = opr->Keys();
+		const auto* index_p = opr->Index();
+		for (n_t idx {0}; idx < CFG::VEC_SZ; ++idx) {
+			typed_col->data.push_back(key_p[index_p[idx]]);
+		}
+	}
+	void operator()(const auto& /*opr*/) const {FLS_UNREACHABLE()}
+
+	up<TypedCol<PT>>& typed_col;
+};
+
 } // namespace
 
 /*--------------------------------------------------------------------------------------------------------------------*\
@@ -82,21 +213,115 @@ enc_subintsplit_opr<PT>::enc_subintsplit_opr(const PhysicalExpr& /*expr*/,
 
 	const n_t n_sections = sections.size();
 
-	// Every section is EXP_FFOR_I64/I32 with operand count 3 for now -- the header format already
-	// carries a genuine per-section token/operand-count pair (see the file header comment), but
-	// Encode()/Decode() don't consult it yet.
-	section_tokens.assign(n_sections,
-	                      std::is_same_v<PT, i64_pt> ? OperatorToken::EXP_FFOR_I64 : OperatorToken::EXP_FFOR_I32);
-	section_operand_counts.assign(n_sections, 3);
+	section_tokens.reserve(n_sections);
+	section_operand_counts.reserve(n_sections);
+	section_exprs.reserve(n_sections);
+	section_rowgroups.reserve(n_sections);
+	section_col_descriptors.reserve(n_sections);
 
-	bitpacked_segments.reserve(n_sections);
-	base_segments.reserve(n_sections);
-	bitwidth_segments.reserve(n_sections);
+	const DataType section_data_type = std::is_same_v<PT, i64_pt> ? DataType::INT64 : DataType::INT32;
+
 	for (n_t s {0}; s < n_sections; ++s) {
-		bitpacked_segments.push_back(make_unique<Segment>());
-		base_segments.push_back(make_unique<Segment>());
-		bitwidth_segments.push_back(make_unique<Segment>());
+		const bw_t bit_start = sections[s].bit_start;
+		const UT   mask      = section_mask<UT>(sections[s].width());
+
+		// Choose this section's codec from the same sample already gathered for the split DP above --
+		// real per-candidate TryExpr cost on the full column would multiply the DP's own sampling
+		// budget by (candidates x n_sections), and pool comparisons only need relative cost between
+		// candidates on the same sample, not absolute size against the real column.
+		vector<PT> section_sample;
+		section_sample.reserve(sampled_vectors.size() * CFG::VEC_SZ);
+		for (const auto& vec : sampled_vectors) {
+			for (const PT value : vec) {
+				section_sample.push_back(static_cast<PT>((static_cast<UT>(value) >> bit_start) & mask));
+			}
+		}
+		const OperatorToken token =
+		    subintsplit::select_section_encoding<PT>(section_sample, std::max<n_t>(sampled_vectors.size(), 1));
+		section_tokens.push_back(token);
+
+		// Build the section's real child encoder over its FULL extracted-and-shifted values (every
+		// vector, not just the sample above) -- this is what Encode() actually drives per vector below.
+		auto section_col = make_unique<TypedCol<PT>>();
+		section_col->data.reserve(n_tuples);
+		section_col->null_map_arr.assign(n_tuples, 0);
+		for (n_t v {0}; v < n_vec; ++v) {
+			const n_t offset   = v * CFG::VEC_SZ;
+			const n_t len      = std::min<n_t>(CFG::VEC_SZ, n_tuples - offset);
+			const PT* vec_data = col_viewer.Data(v);
+			for (n_t i {0}; i < len; ++i) {
+				section_col->data.push_back(static_cast<PT>((static_cast<UT>(vec_data[i]) >> bit_start) & mask));
+			}
+		}
+
+		// Mirrors Rowgroup::PopulateBiMap's exact loop (see subintsplit_section_selector.hpp for why):
+		// codecs like Frequency/Dictionary/Constant read these stats directly off the column, not off
+		// anything select_section_encoding computed above -- that was a different, sample-only column.
+		auto& section_stats = section_col->m_stats;
+		for (const PT value : section_col->data) {
+			if (!section_stats.bimap_frequency.contains_value(value)) {
+				const n_t next_idx = section_stats.bimap_frequency.size();
+				section_stats.bimap_frequency.insert(next_idx, value);
+			} else {
+				const n_t existing_key = section_stats.bimap_frequency.get_key(value);
+				section_stats.bimap_frequency.insert(existing_key, value);
+			}
+			section_stats.min = std::min(section_stats.min, value);
+			section_stats.max = std::max(section_stats.max, value);
+		}
+		section_stats.n_nulls = 0;
+
+		const bool is_constant_token =
+		    token == OperatorToken::EXP_CONSTANT_I64 || token == OperatorToken::EXP_CONSTANT_I32;
+
+		if (is_constant_token) {
+			// enc_constant_opr is a bare marker struct (no Encode/MoveSegments; the value normally
+			// travels via ColumnDescriptorT::max, which has no per-section slot here) -- write the
+			// single value as our own block-based Segment instead. section_col->data is guaranteed
+			// non-empty (n_tuples > 0) and, since select_section_encoding only reaches this token via
+			// its constant pre-pass, every entry is the same value.
+			auto constant_segment = make_unique<Segment>();
+			constant_segment->MakeBlockBased();
+			const PT constant_value = section_col->data[0];
+			constant_segment->Flush(&constant_value, sizeof(PT));
+
+			section_exprs.push_back(nullptr);
+			section_constant_segments.push_back(std::move(constant_segment));
+			section_rowgroups.emplace_back();
+			section_col_descriptors.push_back(nullptr);
+			section_operand_counts.push_back(1);
+		} else {
+			rowgroup_pt section_rowgroup;
+			section_rowgroup.emplace_back(std::move(section_col));
+
+			auto section_cd          = make_unique<ColumnDescriptorT>();
+			section_cd->data_type    = section_data_type;
+			section_cd->idx          = 0;
+			section_cd->max          = make_unique<BinaryValueT>();
+			section_cd->encoding_rpn = make_unique<RPNT>();
+			section_cd->encoding_rpn->operator_tokens.push_back(token);
+
+			InterpreterState section_state;
+			sp<PhysicalExpr> section_expr =
+			    Interpreter::Encoding::Interpret(*section_cd, section_rowgroup, section_state);
+
+			// operand_tokens.size() (not section_state.cur_operand) is the authoritative segment
+			// count: most operators grow both in lockstep via state.cur_operand++, but
+			// enc_uncompressed_opr pushes a single hardcoded placeholder operand token without ever
+			// touching state.cur_operand (harmless for a real top-level column, where it's always
+			// operand 0 anyway -- but section_state.cur_operand would silently read back 0 here).
+			const n_t operand_count = section_cd->encoding_rpn->operand_tokens.size();
+			FLS_ASSERT_G(operand_count, 0)
+			FLS_ASSERT_LE(operand_count, std::numeric_limits<uint8_t>::max())
+			section_operand_counts.push_back(static_cast<uint8_t>(operand_count));
+
+			section_exprs.push_back(std::move(section_expr));
+			section_constant_segments.push_back(nullptr);
+			section_rowgroups.push_back(std::move(section_rowgroup));
+			section_col_descriptors.push_back(std::move(section_cd));
+		}
 	}
+
 	header_segment = make_unique<Segment>();
 	header_segment->MakeBlockBased();
 
@@ -104,9 +329,9 @@ enc_subintsplit_opr<PT>::enc_subintsplit_opr(const PhysicalExpr& /*expr*/,
 	// segment it hands over. The header is pushed last so the decoder can read it before it knows how far to reach.
 	auto& [operator_tokens, operand_tokens] = *column_descriptor.encoding_rpn;
 	for (n_t s {0}; s < n_sections; ++s) {
-		operand_tokens.emplace_back(state.cur_operand++);
-		operand_tokens.emplace_back(state.cur_operand++);
-		operand_tokens.emplace_back(state.cur_operand++);
+		for (n_t k {0}; k < section_operand_counts[s]; ++k) {
+			operand_tokens.emplace_back(state.cur_operand++);
+		}
 	}
 	operand_tokens.emplace_back(state.cur_operand++);
 }
@@ -114,40 +339,33 @@ enc_subintsplit_opr<PT>::enc_subintsplit_opr(const PhysicalExpr& /*expr*/,
 template <typename PT>
 void enc_subintsplit_opr<PT>::PointTo(const n_t vec_idx) {
 	col_viewer.PointTo(vec_idx);
+	cur_vec_idx = vec_idx;
+	for (auto& section_expr : section_exprs) {
+		if (section_expr) { // null for Constant sections, which have no per-vector work at all
+			section_expr->PointTo(vec_idx);
+		}
+	}
 }
 
 template <typename PT>
 void enc_subintsplit_opr<PT>::Encode() {
-	const PT* data       = col_viewer.Data();
-	const n_t n_sections = sections.size();
-
-	for (n_t s {0}; s < n_sections; ++s) {
-		const bw_t bit_start = sections[s].bit_start;
-		const UT   mask      = section_mask<UT>(sections[s].width());
-
-		// Extract the section, and take its min/max in the same pass: FFOR stores value - min, so the packed width is
-		// bit_width(max - min) rather than the section's declared width.
-		UT min_val = static_cast<UT>(~static_cast<UT>(0));
-		UT max_val = 0;
-		for (n_t i {0}; i < CFG::VEC_SZ; ++i) {
-			const UT value = static_cast<UT>((static_cast<UT>(data[i]) >> bit_start) & mask);
-			section_arr[i] = value;
-			min_val        = std::min<UT>(min_val, value);
-			max_val        = std::max<UT>(max_val, value);
+	for (auto& section_expr : section_exprs) {
+		if (section_expr) {
+			ExprExecutor::execute(*section_expr, cur_vec_idx);
 		}
-
-		const bw_t bw = static_cast<bw_t>(std::bit_width(static_cast<UT>(max_val - min_val)));
-
-		ffor::ffor(section_arr, bitpacked_arr, bw, &min_val);
-
-		bitpacked_segments[s]->Flush(bitpacked_arr, calculate_bitpacked_vector_size(bw));
-		base_segments[s]->Flush(&min_val, sizeof(UT));
-		bitwidth_segments[s]->Flush(&bw, sizeof(bw_t));
 	}
 }
 
 template <typename PT>
 void enc_subintsplit_opr<PT>::Finalize() {
+	for (auto& section_expr : section_exprs) {
+		if (section_expr) {
+			section_expr->Finalize();
+		}
+	}
+	// Constant sections' single value segment was already Flushed at construction time (the whole
+	// column's data is already known then; there's no per-vector accumulation to wait for).
+
 	const n_t n_sections = sections.size();
 
 	vector<uint8_t> header;
@@ -165,10 +383,12 @@ void enc_subintsplit_opr<PT>::Finalize() {
 
 template <typename PT>
 void enc_subintsplit_opr<PT>::MoveSegments(vector<up<Segment>>& segments) {
-	for (n_t s {0}; s < sections.size(); ++s) {
-		segments.push_back(std::move(bitpacked_segments[s]));
-		segments.push_back(std::move(base_segments[s]));
-		segments.push_back(std::move(bitwidth_segments[s]));
+	for (n_t s {0}; s < section_exprs.size(); ++s) {
+		if (section_exprs[s]) {
+			section_exprs[s]->MoveSegments(segments);
+		} else {
+			segments.push_back(std::move(section_constant_segments[s]));
+		}
 	}
 	segments.push_back(std::move(header_segment));
 }
@@ -200,10 +420,6 @@ dec_subintsplit_opr<PT>::dec_subintsplit_opr(PhysicalExpr& /*physical_expr*/,
 		const auto token = static_cast<uint16_t>(record[1]) | (static_cast<uint16_t>(record[2]) << 8);
 		section_tokens.push_back(static_cast<OperatorToken>(token));
 		section_operand_counts.push_back(record[3]);
-		// Every section is EXP_FFOR_I64/I32 with operand count 3 for now (see the file header
-		// comment); Decode()/PointAccess()/Gather() below assume exactly that until the per-section
-		// dispatch lands.
-		FLS_ASSERT_E(section_operand_counts.back(), 3)
 	}
 
 	const n_t operand_total = [&] {
@@ -214,32 +430,86 @@ dec_subintsplit_opr<PT>::dec_subintsplit_opr(PhysicalExpr& /*physical_expr*/,
 		return total;
 	}();
 
-	// Section records occupy the operand_total operands directly below the header, at offsets given
-	// by the running prefix sum of each section's own operand count (currently a uniform stride of
-	// 3, but the format already supports it varying per section).
+	// Section records occupy the operand_total operands directly below the header, at offsets given by the running
+	// prefix sum of each section's own operand count.
 	const n_t first_operand = state.cur_operand - operand_total;
-	bitpacked_segment_views.reserve(n_sections);
-	base_segment_views.reserve(n_sections);
-	bw_segment_views.reserve(n_sections);
+
+	section_exprs.assign(n_sections, nullptr);
+	section_is_plain_ffor.assign(n_sections, false);
+	bitpacked_segment_views.resize(n_sections);
+	base_segment_views.resize(n_sections);
+	bw_segment_views.resize(n_sections);
+	section_constant_segment_views.resize(n_sections);
+	section_decoded_cache.resize(n_sections);
+
 	n_t running_offset {0};
 	for (n_t s {0}; s < n_sections; ++s) {
-		const n_t triple = first_operand + running_offset;
-		bitpacked_segment_views.push_back(column_view.GetSegment(operand_segment_idx(column_view, triple + 0)));
-		base_segment_views.push_back(column_view.GetSegment(operand_segment_idx(column_view, triple + 1)));
-		bw_segment_views.push_back(column_view.GetSegment(operand_segment_idx(column_view, triple + 2)));
+		const n_t           section_first_operand = first_operand + running_offset;
+		const OperatorToken token                 = section_tokens[s];
+
+		if (token == OperatorToken::EXP_CONSTANT_I64 || token == OperatorToken::EXP_CONSTANT_I32) {
+			section_constant_segment_views[s] = make_unique<SegmentView>(
+			    column_view.GetSegment(operand_segment_idx(column_view, section_first_operand)));
+			section_constant_segment_views[s]->PointTo(0); // block-based: one value for the whole column
+		} else if (token == OperatorToken::EXP_FFOR_I64 || token == OperatorToken::EXP_FFOR_I32) {
+			section_is_plain_ffor[s] = true;
+			// Order matches enc_ffor_opr's own MoveSegments (bitpacked, bitwidth, base) -- see
+			// extract_segments_visitor's FFOR case in physical_expression.cpp -- since this section
+			// now goes through the real enc_ffor_opr via Interpreter::Encoding::Interpret rather than
+			// a hand-written bitpacked/base/bitwidth triple.
+			bitpacked_segment_views[s] = make_unique<SegmentView>(
+			    column_view.GetSegment(operand_segment_idx(column_view, section_first_operand + 0)));
+			bw_segment_views[s] = make_unique<SegmentView>(
+			    column_view.GetSegment(operand_segment_idx(column_view, section_first_operand + 1)));
+			base_segment_views[s] = make_unique<SegmentView>(
+			    column_view.GetSegment(operand_segment_idx(column_view, section_first_operand + 2)));
+		} else {
+			section_decoded_cache[s].resize(CFG::VEC_SZ);
+
+			// build_section_decode_expr's concrete constructors read `state.cur_operand` as the ABSOLUTE
+			// index of the LAST operand they consume (dec_unffor_opr etc.'s own convention -- see this
+			// operator's constructor above, which uses the identical convention for itself), not a
+			// section-local count -- seed it with this section's own last operand index accordingly.
+			InterpreterState local_state;
+			local_state.cur_operand = section_first_operand + section_operand_counts[s] - 1;
+			section_exprs[s]        = build_section_decode_expr<PT>(token, column_view, local_state);
+		}
+
 		running_offset += section_operand_counts[s];
 	}
 
+	section_scratch = make_unique<TypedCol<PT>>();
+
 	state.cur_operand -= (operand_total + 1);
+}
+
+template <typename PT>
+void dec_subintsplit_opr<PT>::DecodeSectionVector(const n_t s, const n_t vec_idx, PT* out) {
+	auto& expr = *section_exprs[s];
+	expr.PointTo(vec_idx);
+	ExprExecutor::smart_execute(expr, vec_idx);
+
+	section_scratch->data.clear();
+	visit_dec(section_pull_visitor<PT> {section_scratch}, expr.operators.back());
+	FLS_ASSERT_E(section_scratch->data.size(), CFG::VEC_SZ)
+	copy<PT>(section_scratch->data.data(), out);
 }
 
 template <typename PT>
 void dec_subintsplit_opr<PT>::PointTo(const n_t vec_idx) {
 	const n_t n_sections = bit_starts.size();
 	for (n_t s {0}; s < n_sections; ++s) {
-		bitpacked_segment_views[s].PointTo(vec_idx);
-		base_segment_views[s].PointTo(vec_idx);
-		bw_segment_views[s].PointTo(vec_idx);
+		if (section_is_plain_ffor[s]) {
+			bitpacked_segment_views[s]->PointTo(vec_idx);
+			base_segment_views[s]->PointTo(vec_idx);
+			bw_segment_views[s]->PointTo(vec_idx);
+		} else if (section_tokens[s] != OperatorToken::EXP_CONSTANT_I64 &&
+		           section_tokens[s] != OperatorToken::EXP_CONSTANT_I32) {
+			// Constant needs no per-vector positioning at all; every other non-plain-FFOR section's
+			// vector is decoded once here and cached, so ValueAt/GatherPointwise -- which don't take
+			// vec_idx themselves, matching the plain-FFOR path's existing contract -- can just index it.
+			DecodeSectionVector(s, vec_idx, section_decoded_cache[s].data());
+		}
 	}
 }
 
@@ -255,24 +525,38 @@ void dec_subintsplit_opr<PT>::Decode(const n_t vec_idx) {
 	auto*     output     = reinterpret_cast<UT*>(data);
 
 	for (n_t s {0}; s < n_sections; ++s) {
-		const bw_t bw   = *reinterpret_cast<const bw_t*>(bw_segment_views[s].data);
-		const UT   base = *reinterpret_cast<const UT*>(base_segment_views[s].data);
-
-		unffor::unffor(reinterpret_cast<const UT*>(bitpacked_segment_views[s].data), unffored_arr, bw, &base);
-
 		const bw_t shift = bit_starts[s];
 		const bw_t width = static_cast<bw_t>((s + 1 < n_sections ? bit_starts[s + 1] : TOTAL_BITS) - bit_starts[s]);
 		const UT   mask  = section_mask<UT>(width);
+
+		const UT* section_values;
+		if (section_is_plain_ffor[s]) {
+			const bw_t bw   = *reinterpret_cast<const bw_t*>(bw_segment_views[s]->data);
+			const UT   base = *reinterpret_cast<const UT*>(base_segment_views[s]->data);
+			unffor::unffor(reinterpret_cast<const UT*>(bitpacked_segment_views[s]->data), unffored_arr, bw, &base);
+			section_values = unffored_arr;
+		} else if (section_tokens[s] == OperatorToken::EXP_CONSTANT_I64 ||
+		           section_tokens[s] == OperatorToken::EXP_CONSTANT_I32) {
+			// PointTo already positioned this at the header/segment level; broadcast the one value.
+			const UT constant_value =
+			    static_cast<UT>(*reinterpret_cast<const PT*>(section_constant_segment_views[s]->data));
+			for (n_t i {0}; i < CFG::VEC_SZ; ++i) {
+				unffored_arr[i] = constant_value;
+			}
+			section_values = unffored_arr;
+		} else {
+			section_values = reinterpret_cast<const UT*>(section_decoded_cache[s].data());
+		}
 
 		// Section 0 writes each output element; every later section ORs into it. The branch is hoisted out of the
 		// inner loop so both variants stay vectorisable.
 		if (s == 0) {
 			for (n_t i {0}; i < CFG::VEC_SZ; ++i) {
-				output[i] = static_cast<UT>((unffored_arr[i] & mask) << shift);
+				output[i] = static_cast<UT>((section_values[i] & mask) << shift);
 			}
 		} else {
 			for (n_t i {0}; i < CFG::VEC_SZ; ++i) {
-				output[i] |= static_cast<UT>((unffored_arr[i] & mask) << shift);
+				output[i] |= static_cast<UT>((section_values[i] & mask) << shift);
 			}
 		}
 	}
@@ -286,10 +570,17 @@ PT dec_subintsplit_opr<PT>::ValueAt(const n_t idx) const {
 	UT        value {0};
 
 	for (n_t s {0}; s < n_sections; ++s) {
-		const bw_t bw   = *reinterpret_cast<const bw_t*>(bw_segment_views[s].data);
-		const UT   base = *reinterpret_cast<const UT*>(base_segment_views[s].data);
-		const UT   section =
-		    unffor_single<UT>(reinterpret_cast<const UT*>(bitpacked_segment_views[s].data), bw, base, idx);
+		UT section;
+		if (section_is_plain_ffor[s]) {
+			const bw_t bw   = *reinterpret_cast<const bw_t*>(bw_segment_views[s]->data);
+			const UT   base = *reinterpret_cast<const UT*>(base_segment_views[s]->data);
+			section = unffor_single<UT>(reinterpret_cast<const UT*>(bitpacked_segment_views[s]->data), bw, base, idx);
+		} else if (section_tokens[s] == OperatorToken::EXP_CONSTANT_I64 ||
+		           section_tokens[s] == OperatorToken::EXP_CONSTANT_I32) {
+			section = static_cast<UT>(*reinterpret_cast<const PT*>(section_constant_segment_views[s]->data));
+		} else {
+			section = static_cast<UT>(section_decoded_cache[s][idx]);
+		}
 
 		const bw_t shift = bit_starts[s];
 		const bw_t width = static_cast<bw_t>((s + 1 < n_sections ? bit_starts[s + 1] : TOTAL_BITS) - bit_starts[s]);
@@ -317,20 +608,46 @@ void dec_subintsplit_opr<PT>::GatherPointwise(const n_t vec_idx, const idx_t* ro
 	// Sections outermost so each section's bit width, base and buffer pointer are loaded once for the whole gather
 	// rather than once per row.
 	for (n_t s {0}; s < n_sections; ++s) {
-		const bw_t  bw     = *reinterpret_cast<const bw_t*>(bw_segment_views[s].data);
-		const UT    base   = *reinterpret_cast<const UT*>(base_segment_views[s].data);
-		const auto* packed = reinterpret_cast<const UT*>(bitpacked_segment_views[s].data);
-		const bw_t  shift  = bit_starts[s];
-		const bw_t  width  = static_cast<bw_t>((s + 1 < n_sections ? bit_starts[s + 1] : TOTAL_BITS) - bit_starts[s]);
-		const UT    mask   = section_mask<UT>(width);
+		const bw_t shift = bit_starts[s];
+		const bw_t width = static_cast<bw_t>((s + 1 < n_sections ? bit_starts[s + 1] : TOTAL_BITS) - bit_starts[s]);
+		const UT   mask  = section_mask<UT>(width);
 
-		if (s == 0) {
-			for (n_t i {0}; i < n; ++i) {
-				output[i] = static_cast<UT>((unffor_single<UT>(packed, bw, base, rows[i]) & mask) << shift);
+		if (section_is_plain_ffor[s]) {
+			const bw_t  bw     = *reinterpret_cast<const bw_t*>(bw_segment_views[s]->data);
+			const UT    base   = *reinterpret_cast<const UT*>(base_segment_views[s]->data);
+			const auto* packed = reinterpret_cast<const UT*>(bitpacked_segment_views[s]->data);
+			if (s == 0) {
+				for (n_t i {0}; i < n; ++i) {
+					output[i] = static_cast<UT>((unffor_single<UT>(packed, bw, base, rows[i]) & mask) << shift);
+				}
+			} else {
+				for (n_t i {0}; i < n; ++i) {
+					output[i] |= static_cast<UT>((unffor_single<UT>(packed, bw, base, rows[i]) & mask) << shift);
+				}
+			}
+		} else if (section_tokens[s] == OperatorToken::EXP_CONSTANT_I64 ||
+		           section_tokens[s] == OperatorToken::EXP_CONSTANT_I32) {
+			const UT value = static_cast<UT>(*reinterpret_cast<const PT*>(section_constant_segment_views[s]->data));
+			const UT contribution = static_cast<UT>((value & mask) << shift);
+			if (s == 0) {
+				for (n_t i {0}; i < n; ++i) {
+					output[i] = contribution;
+				}
+			} else {
+				for (n_t i {0}; i < n; ++i) {
+					output[i] |= contribution;
+				}
 			}
 		} else {
-			for (n_t i {0}; i < n; ++i) {
-				output[i] |= static_cast<UT>((unffor_single<UT>(packed, bw, base, rows[i]) & mask) << shift);
+			const auto& cache = section_decoded_cache[s];
+			if (s == 0) {
+				for (n_t i {0}; i < n; ++i) {
+					output[i] = static_cast<UT>((static_cast<UT>(cache[rows[i]]) & mask) << shift);
+				}
+			} else {
+				for (n_t i {0}; i < n; ++i) {
+					output[i] |= static_cast<UT>((static_cast<UT>(cache[rows[i]]) & mask) << shift);
+				}
 			}
 		}
 	}

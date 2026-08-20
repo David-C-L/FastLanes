@@ -591,6 +591,12 @@ n_t PhysicalExpr::Size(n_t sample_size, n_t n_vecs) const {
 	return ttl_size;
 }
 
+void PhysicalExpr::MoveSegments(vector<up<Segment>>& segments) const {
+	for (const auto& op : operators) {
+		visit_enc(extract_segments_visitor {segments}, op);
+	}
+}
+
 /*--------------------------------------------------------------------------------------------------------------------*\
  * Finalize
 \*--------------------------------------------------------------------------------------------------------------------*/
