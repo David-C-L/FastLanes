@@ -27,6 +27,7 @@
 #include "fls/expression/rsum_operator.hpp"
 #include "fls/expression/scan_operator.hpp"
 #include "fls/expression/slpatch_operator.hpp"
+#include "fls/expression/subintsplit_operator.hpp"
 #include "fls/expression/transpose_operator.hpp"
 #include "fls/expression/validitymask_operator.hpp"
 #include "fls/std/type_traits.hpp"
@@ -156,6 +157,24 @@ void make_enc_fsst_delta_slpatch_expr(PhysicalExpr&      physical_expr,
 	    enc_physical_operator {make_shared<enc_slpatch_opr<ofs_t>>(physical_expr, column, column_descriptor, state)});
 	operators.emplace_back(
 	    enc_physical_operator {make_shared<enc_ffor_opr<ofs_t>>(physical_expr, column, column_descriptor, state)});
+}
+
+/*--------------------------------------------------------------------------------------------------------------------*\
+ * make_enc_subintsplit_expr
+ *
+ * A single operator, unlike the scan -> analyze -> ffor chain: SubIntSplit reads the column itself and does its own
+ * per-section FFOR analysis, because base and bit width are per section, not per column.
+\*--------------------------------------------------------------------------------------------------------------------*/
+template <typename PT>
+void make_enc_subintsplit_expr(PhysicalExpr&      physical_expr,
+                               const rowgroup_pt& rowgroup,
+                               ColumnDescriptorT& column_descriptor,
+                               InterpreterState&  state) {
+	const auto& column    = rowgroup[column_descriptor.idx];
+	auto&       operators = physical_expr.operators;
+
+	operators.emplace_back(
+	    enc_physical_operator {make_shared<enc_subintsplit_opr<PT>>(physical_expr, column, column_descriptor, state)});
 }
 
 /*--------------------------------------------------------------------------------------------------------------------*\
@@ -1040,6 +1059,14 @@ sp<PhysicalExpr> Interpreter::Encoding::Interpret(ColumnDescriptorT& column_desc
 		}
 		case EXP_FREQUENCY_I64: {
 			make_enc_frequency_expr<i64_pt>(*physical_expr, physical_rowgroup, column_descriptor, state);
+			break;
+		}
+		case EXP_SUBINTSPLIT_I64: {
+			make_enc_subintsplit_expr<i64_pt>(*physical_expr, physical_rowgroup, column_descriptor, state);
+			break;
+		}
+		case EXP_SUBINTSPLIT_I32: {
+			make_enc_subintsplit_expr<i32_pt>(*physical_expr, physical_rowgroup, column_descriptor, state);
 			break;
 		}
 		case EXP_FREQUENCY_STR: {

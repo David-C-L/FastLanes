@@ -333,6 +333,10 @@ string token_to_string(OperatorToken token) {
 		return "EXP_GALP_FLT"; // 155
 	case OperatorToken::EXP_GALP_DBL:
 		return "EXP_GALP_DBL"; // 156
+	case OperatorToken::EXP_SUBINTSPLIT_I64:
+		return "EXP_SUBINTSPLIT_I64"; // 157
+	case OperatorToken::EXP_SUBINTSPLIT_I32:
+		return "EXP_SUBINTSPLIT_I32"; // 158
 	default:
 		FLS_UNREACHABLE()
 	}

@@ -201,6 +201,32 @@ Connection& Connection::force_schema_pool(const vector<OperatorToken>& operator_
 	return *this;
 }
 
+Connection& Connection::disable_encoding(const OperatorToken operator_token) {
+	// Idempotent, so callers can disable the same token from several places without growing the set.
+	if (!is_encoding_disabled(operator_token)) {
+		m_config->disabled_operator_tokens.push_back(operator_token);
+	}
+
+	return *this;
+}
+
+Connection& Connection::enable_all_encodings() {
+	m_config->disabled_operator_tokens.clear();
+
+	return *this;
+}
+
+bool Connection::is_encoding_disabled(const OperatorToken operator_token) const {
+	const auto& disabled = m_config->disabled_operator_tokens;
+
+	return std::find(disabled.begin(), disabled.end(), operator_token) != disabled.end();
+}
+
+const vector<OperatorToken>& Connection::get_disabled_encodings() const {
+	//
+	return m_config->disabled_operator_tokens;
+}
+
 Connection& Connection::force_schema(const vector<OperatorToken>& operator_token) {
 	m_config->is_forced_schema = true;
 

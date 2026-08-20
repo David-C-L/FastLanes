@@ -22,6 +22,7 @@
 #include "fls/expression/rsum_operator.hpp"
 #include "fls/expression/scan_operator.hpp"
 #include "fls/expression/slpatch_operator.hpp"
+#include "fls/expression/subintsplit_operator.hpp"
 #include "fls/expression/transpose_operator.hpp"
 #include "fls/expression/validitymask_operator.hpp"
 #include <variant> // for std::monostate
@@ -210,6 +211,14 @@ struct operator_visitor {
 	}
 	template <typename PT>
 	void operator()(sp<enc_frequency_opr<PT>>& opr) {
+		opr->Encode();
+	}
+	template <typename PT>
+	void operator()(sp<dec_subintsplit_opr<PT>>& opr) {
+		opr->Decode(vec_idx);
+	}
+	template <typename PT>
+	void operator()(sp<enc_subintsplit_opr<PT>>& opr) {
 		opr->Encode();
 	}
 	void operator()(sp<dec_frequency_str_opr>& opr) {
@@ -447,6 +456,14 @@ struct operator_counter_visitor {
 	}
 	template <typename PT>
 	void operator()(sp<enc_frequency_opr<PT>>& opr) {
+		physical_expr.n_active_operators++;
+	}
+	template <typename PT>
+	void operator()(sp<dec_subintsplit_opr<PT>>& opr) {
+		physical_expr.n_active_operators++;
+	}
+	template <typename PT>
+	void operator()(sp<enc_subintsplit_opr<PT>>& opr) {
 		physical_expr.n_active_operators++;
 	}
 	void operator()(sp<dec_frequency_str_opr>& opr) {

@@ -24,11 +24,14 @@
 #include "fls/std/vector.hpp"     // for vector
 #include "fls/table/rowgroup.hpp" // for Rowgroup, TypedCol (ptr ...
 #include "fls/wizard/sampling_layout.hpp"
+#include "fls/wizard/wizard_internal.hpp"
 #include <algorithm> // std::min_element
 #include <cstdint>   // int8_t, int16_t, int32_t, int64_t, uint8_t, uint16_t
 #include <cstring>
 #include <limits>        // std::numeric_limits
 #include <memory>        // for unique_ptr, make_unique
+#include <stdexcept>     // for std::runtime_error
+#include <string>        // for std::to_string
 #include <type_traits>   // std::conditional_t
 #include <unordered_map> // std::unordered_map
 #include <utility>       // std::move
@@ -579,6 +582,7 @@ vector<OperatorToken>& get_pool(const DataType data_typ) {
 		    OperatorToken::EXP_FFOR_I64,
 		    OperatorToken::EXP_FREQUENCY_I64,
 		    OperatorToken::EXP_CROSS_RLE_I64,
+		    OperatorToken::EXP_SUBINTSPLIT_I64,
 		};
 
 		static vector<OperatorToken> I32_POOL = {
@@ -590,6 +594,7 @@ vector<OperatorToken>& get_pool(const DataType data_typ) {
 		    OperatorToken::EXP_FFOR_I32,
 		    OperatorToken::EXP_FREQUENCY_I32,
 		    OperatorToken::EXP_CROSS_RLE_I32, //
+		    OperatorToken::EXP_SUBINTSPLIT_I32,
 		};
 
 		static vector<OperatorToken> I16_POOL = {
@@ -777,8 +782,15 @@ void TypedDecide(const rowgroup_pt&   rowgroup,
                  RowgroupDescriptorT& footer,
                  const Connection&    fls) {
 
-	auto evaluate_expressions = [&](const auto& operator_token_list) {
+	// The disabled encodings are filtered here, at the call site, and never erased from the pool itself: get_pool<PT>
+	// and friends hand back a reference to a function-local static shared by every Connection in the process, so
+	// mutating it would leak one connection's ablation into all the others and make results order-dependent.
+	auto evaluate_expressions = [&](const auto& operator_token_list, const bool honour_disabled) {
 		for (const auto& expr : operator_token_list) {
+			if (honour_disabled && fls.is_encoding_disabled(expr)) {
+				continue;
+			}
+
 			n_t  size = TryExpr(rowgroup, column_descriptor, expr, footer, fls);
 			auto res  = std::make_unique<ExpressionResultT>();
 
@@ -790,21 +802,29 @@ void TypedDecide(const rowgroup_pt&   rowgroup,
 	};
 
 	if (fls.is_forced_schema_pool()) {
-		evaluate_expressions(fls.get_forced_schema_pool());
+		// An explicitly forced pool is honoured verbatim, so this path stays exactly as it was.
+		evaluate_expressions(fls.get_forced_schema_pool(), false);
 	} else if (IsDictionaryEncodingRequired(column_descriptor)) {
 		column_descriptor.encoding_rpn->operator_tokens.clear();
 		const n_t index_type = column_descriptor.encoding_rpn->operand_tokens.back();
 		column_descriptor.encoding_rpn->operand_tokens.clear();
-		evaluate_expressions(get_dict_encoding_pool<PT>(index_type));
+		evaluate_expressions(get_dict_encoding_pool<PT>(index_type), true);
 	} else if (IsDictionaryChoosingRequired(column_descriptor)) {
 		column_descriptor.encoding_rpn->operator_tokens.clear();
 		const n_t index_type = column_descriptor.encoding_rpn->operand_tokens.back();
 		column_descriptor.encoding_rpn->operand_tokens.pop_back();
-		evaluate_expressions(get_dict_pool<PT>(index_type));
+		evaluate_expressions(get_dict_pool<PT>(index_type), true);
 	} else {
 		const n_t index_type = static_cast<n_t>(FindBestDataTypeForColumn(rowgroup[column_descriptor.idx]));
-		evaluate_expressions(get_dict_encoding_pool<PT>(index_type));
-		evaluate_expressions(get_pool<PT>(column_descriptor.data_type));
+		evaluate_expressions(get_dict_encoding_pool<PT>(index_type), true);
+		evaluate_expressions(get_pool<PT>(column_descriptor.data_type), true);
+	}
+
+	// ChooseBestExpr asserts on an empty space, but FLS_ASSERT_FALSE is compiled out in Release, where it would then
+	// dereference min_element on an empty range. Fail loudly instead.
+	if (column_descriptor.expr_space.empty()) {
+		throw std::runtime_error("No encoding candidate left for column " + std::to_string(column_descriptor.idx) +
+		                         ": every candidate in its pool has been disabled.");
 	}
 
 	auto best_expr = ChooseBestExpr(column_descriptor.expr_space);

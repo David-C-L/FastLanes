@@ -1,0 +1,2 @@
+add_executable(bench_subintsplit_limited bench_subintsplit_limited.cpp)
+target_link_libraries(bench_subintsplit_limited PUBLIC FastLanes::benchmarker)

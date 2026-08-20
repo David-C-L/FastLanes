@@ -35,6 +35,9 @@ public:
 public:
 	bool                  is_forced_schema_pool;
 	vector<OperatorToken> forced_schema_pool;
+	// Encodings the wizard must not consider. Expected to hold one or two entries, so a vector with a linear scan is
+	// cheaper than a hash set.
+	vector<OperatorToken> disabled_operator_tokens;
 	bool                  is_forced_schema;
 	vector<OperatorToken> forced_schema;
 	n_t                   sample_size;
@@ -95,6 +98,23 @@ public:
 	[[nodiscard]] const vector<OperatorToken>& get_forced_schema_pool() const;
 	//
 	Connection& force_schema_pool(const vector<OperatorToken>& operator_token);
+	// API:
+	// Removes an encoding from the candidate pool the wizard evaluates, so two runs can be compared that differ only
+	// in whether that encoding was available. Idempotent: disabling the same token twice is a no-op.
+	//
+	// Note that a physical type may be narrowed by Rowgroup::Cast(), so an encoding that exists for several widths
+	// has to be disabled for each of them (for example EXP_SUBINTSPLIT_I64 *and* EXP_SUBINTSPLIT_I32).
+	//
+	// The filter applies to expression-pool candidates only. A column claimed earlier by constant_check,
+	// equality_check or map_1t1_check never reaches the expression search and therefore ignores the disabled set.
+	// The forced-schema-pool path is likewise unaffected: an explicitly forced list is always honoured verbatim.
+	Connection& disable_encoding(OperatorToken operator_token);
+	// Clears the disabled set, restoring the full candidate pool.
+	Connection& enable_all_encodings();
+	//
+	[[nodiscard]] bool is_encoding_disabled(OperatorToken operator_token) const;
+	//
+	[[nodiscard]] const vector<OperatorToken>& get_disabled_encodings() const;
 	// API:
 	// If the specified sample size exceeds the row group size, it is capped at the row group size.
 	// A sample size of 0 is reserved for forcing fastlanes to use the entire row group as the sample size.

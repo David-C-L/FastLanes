@@ -1,6 +1,7 @@
 add_executable(primitive_test
         fsst_test.cpp
         patch_test.cpp
+        unffor_single_test.cpp
 )
 
 target_link_libraries(primitive_test

@@ -209,4 +209,8 @@ enum OperatorToken : ushort {
   EXP_RLE_U08_U16                    = 154,
   EXP_GALP_FLT                       = 155,
   EXP_GALP_DBL                       = 156,
+
+  // SubIntSplit
+  EXP_SUBINTSPLIT_I64                = 157,
+  EXP_SUBINTSPLIT_I32                = 158,
 }
