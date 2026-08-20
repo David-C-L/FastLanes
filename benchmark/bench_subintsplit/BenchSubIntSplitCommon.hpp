@@ -601,13 +601,25 @@ void bench_sis_paths(const DatasetSpec&          spec,
 		for (n_t s {0}; s < n_sections; ++s) {
 			starts.push_back(std::to_string(static_cast<n_t>(oprs[0]->bit_starts[s])));
 		}
+		// A section's bit width is only meaningful (and only reachable via bw_segment_views, which is
+		// only populated for plain-FFOR sections now that a section can be any of {Uncompressed,
+		// Constant, RLE, Dictionary, FFOR, FFOR_SLPATCH, FrequencyPartition}) when every rowgroup agrees
+		// it's plain FFOR; otherwise report the token instead of dereferencing a null segment view.
 		vector<string> bw_medians;
 		for (n_t s {0}; s < min_sections; ++s) {
+			const bool all_plain_ffor = std::all_of(
+			    oprs.begin(), oprs.end(), [&](const sp<dec_subintsplit_opr<PT>>& opr) {
+				    return opr->section_is_plain_ffor[s];
+			    });
+			if (!all_plain_ffor) {
+				bw_medians.push_back("non_ffor");
+				continue;
+			}
 			vector<n_t> widths;
 			for (n_t rg {0}; rg < plan.layout.n_rowgroups; ++rg) {
 				for (n_t vec_idx {0}; vec_idx < plan.layout.n_vec[rg]; ++vec_idx) {
 					oprs[rg]->PointTo(vec_idx);
-					widths.push_back(*reinterpret_cast<const bw_t*>(oprs[rg]->bw_segment_views[s].data));
+					widths.push_back(*reinterpret_cast<const bw_t*>(oprs[rg]->bw_segment_views[s]->data));
 				}
 			}
 			std::sort(widths.begin(), widths.end());
