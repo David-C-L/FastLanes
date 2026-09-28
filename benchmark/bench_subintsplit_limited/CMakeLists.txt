@@ -1,2 +1,3 @@
 add_executable(bench_subintsplit_limited bench_subintsplit_limited.cpp)
 target_link_libraries(bench_subintsplit_limited PUBLIC FastLanes::benchmarker)
+target_compile_definitions(bench_subintsplit_limited PRIVATE FLS_BENCH_BUILD_TYPE="${CMAKE_BUILD_TYPE}")

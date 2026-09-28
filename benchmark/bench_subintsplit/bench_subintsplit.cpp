@@ -16,8 +16,8 @@
 //   point   likewise reported as decode-then-index for every encoding, so the column stays comparable; SubIntSplit's
 //           position-arithmetic `PointAccess` is a separate, non-comparable metric.
 //
-// Every timed metric is the MINIMUM over repetitions, the robust estimator for a microbenchmark whose noise is
-// one-sided. All random probes are pre-generated outside the timed regions from one fixed seed and reused for every
+// Every timed metric is the MEDIAN over repetitions, matching the BtrBlocks and Nimble harnesses this is read next to.
+// All random probes are pre-generated outside the timed regions from one fixed seed and reused for every
 // encoding, so the columns compare encodings rather than random draws.
 //
 // Dataset root: $FLS_SUBINTSPLIT_DATA_DIR, falling back to the in-repo data/generated/subintsplit.
@@ -57,7 +57,7 @@ int main() {
 	    env_root != nullptr ? string {env_root} : string {FLS_CMAKE_SOURCE_DIR} + "/data/generated/subintsplit";
 	std::cout << "dataset root: " << data_root << std::endl;
 
-	vector<DatasetSpec> datasets = {
+	vector<DatasetSpec> builtin_datasets = {
 	    // Real Twitter snowflake IDs, not simulated. This is the headline dataset. Optional: only
 	    // present when extract_real_snowflake.py has been run, since it needs the
 	    // EncodingsPlayground parquet.
@@ -68,6 +68,9 @@ int main() {
 	    {"tpch_partkey_i32", data_root + "/tpch_partkey_i32", DataType::INT32},
 	    {"ipv4_i32", data_root + "/ipv4_i32", DataType::INT32},
 	};
+
+	// $FLS_SUBINTSPLIT_MANIFEST overrides the built-in list; see load_manifest().
+	vector<DatasetSpec> datasets = resolve_datasets(builtin_datasets);
 
 	for (auto& spec : datasets) {
 		if (!std::filesystem::exists(path {spec.dir} / "generated.csv")) {
@@ -89,6 +92,10 @@ int main() {
 		    << std::setprecision(6) << row.value << "," << row.unit << "," << row.detail << "," << row.note << "\n";
 	}
 	std::cout << "\n-- results written to " << result_path << std::endl;
+
+	const path metadata_path = result_path.parent_path() / (result_path.stem().string() + "_run_metadata.csv");
+	write_run_metadata(metadata_path, result_path.stem().string());
+	std::cout << "-- run metadata written to " << metadata_path << std::endl;
 
 	if (g_sink == std::numeric_limits<uint64_t>::max()) {
 		std::cout << "" << std::endl; // keeps every measured loop observable
