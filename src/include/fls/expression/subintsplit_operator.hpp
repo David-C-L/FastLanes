@@ -16,11 +16,12 @@
  * SubIntSplit encoding operators.
  *
  * Every value of the column is cut into K contiguous bit ranges ("sections"), chosen once per column by
- * subintsplit::select_splits (a cheap, FFOR-width-only cost oracle -- unchanged by any of this). Each section is
- * then independently handed to subintsplit::select_section_encoding (subintsplit_section_selector.hpp), which picks
- * its own real codec -- Uncompressed, Constant, RLE, Dictionary, FFOR, FFOR_SLPATCH, or FrequencyPartition -- from
- * real measured cost on the section's own extracted-and-shifted values. This mirrors Nimble's own two-phase design:
- * the split DP's guess at a cheap codec only steers where the splits go and is discarded, the real per-section pick
+ * subintsplit::select_splits (a cheap cost oracle: per range, the minimum of size estimates for the same codecs the
+ * section selector offers). Each section is then independently handed to subintsplit::select_section_encoding
+ * (subintsplit_section_selector.hpp), which picks its own real codec -- Uncompressed, Constant, RLE, Dictionary, FFOR,
+ * FFOR_SLPATCH, or FrequencyPartition -- from real measured cost on the section's own extracted-and-shifted values.
+ * This mirrors Nimble's own two-phase design: the split DP's estimate of the cheapest codec only steers where the
+ * splits go and is discarded, the real per-section pick
  * happens later, on real per-section data. A section whose values carry independent semantic fields but no further
  * exploitable structure (a snowflake id's timestamp field, say) typically still lands on FFOR; a section that is
  * constant, low-cardinality, or mostly-one-value across the whole column can do better.

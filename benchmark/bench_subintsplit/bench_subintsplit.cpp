@@ -21,6 +21,12 @@
 // encoding, so the columns compare encodings rather than random draws.
 //
 // Dataset root: $FLS_SUBINTSPLIT_DATA_DIR, falling back to the in-repo data/generated/subintsplit.
+// Dataset list: $FLS_SUBINTSPLIT_MANIFEST (name,dir,type CSV), overriding the built-in list.
+// Codec set: $FLS_SUBINTSPLIT_SHARED_CODECS=1 restricts both wizard arms to the cross-format shared set (Uncompressed,
+// Constant, Dictionary, RLE, FFOR_SLPATCH, Frequency, FFOR; plus SubIntSplit in wizard_with_sis), see
+// disable_non_shared_codecs(). Unset keeps the full wizard pool. Recorded in the run metadata as wizard_codec_set.
+// Rows: $FLS_SUBINTSPLIT_ROWS (comma-separated labels, e.g. wizard_without_sis,wizard_with_sis) runs only those rows.
+// Correctness: every arm records metric "validated" (1/0) from the probe cross-check against materialize().
 // Output: benchmark/result/subintsplit/subintsplit.csv
 //
 #include "BenchSubIntSplitCommon.hpp"
@@ -47,6 +53,18 @@ vector<RowSpec> make_row_specs(const DataType type) {
 	    {"wizard", "wizard_with_sis", Mode::Wizard},
 	    {"wizard", "wizard_without_sis", Mode::WizardNoSis},
 	};
+}
+
+// $FLS_SUBINTSPLIT_ROWS: keep only the listed row labels; unset keeps every row.
+vector<RowSpec> filter_row_specs(vector<RowSpec> row_specs) {
+	const char* env = std::getenv("FLS_SUBINTSPLIT_ROWS");
+	if (env == nullptr || string {env}.empty()) {
+		return row_specs;
+	}
+	const string wanted = "," + string {env} + ",";
+	std::erase_if(row_specs,
+	              [&](const RowSpec& row_spec) { return wanted.find("," + row_spec.label + ",") == string::npos; });
+	return row_specs;
 }
 
 } // namespace
@@ -79,7 +97,7 @@ int main() {
 		}
 		spec.n_rows    = count_rows(path {spec.dir} / "generated.csv");
 		spec.raw_bytes = spec.n_rows * element_size(spec.type);
-		run_dataset(spec, make_row_specs(spec.type));
+		run_dataset(spec, filter_row_specs(make_row_specs(spec.type)));
 	}
 
 	const path result_path =

@@ -599,6 +599,36 @@ vector<DatasetSpec> resolve_datasets(const vector<DatasetSpec>& fallback) {
 	return load_manifest(env == nullptr ? path {} : path {env}, fallback);
 }
 
+// $FLS_SUBINTSPLIT_SHARED_CODECS=1 holds both wizard arms (wizard_with_sis, wizard_without_sis) to the codec set shared
+// by the cross-format comparison with Nimble and BtrBlocks: Uncompressed, Constant, Dictionary, RLE, FFOR_SLPATCH,
+// Frequency and FFOR (plus SubIntSplit in wizard_with_sis). That is WizardLimited's set (see write_fls), so the same
+// tokens go: RLE_slpatch, Delta and CrossRLE, here at every integer width Cast() can narrow a column to. SubIntSplit's
+// own sections already choose from exactly this set (subintsplit_section_selector.hpp), so nothing changes there.
+// Unset or any other value keeps the default, full wizard pool.
+bool shared_codecs_enabled() {
+	const char* env = std::getenv("FLS_SUBINTSPLIT_SHARED_CODECS");
+	return env != nullptr && string {env} == "1";
+}
+
+void disable_non_shared_codecs(Connection& conn) {
+	for (const OperatorToken token : {OperatorToken::EXP_RLE_I64_SLPATCH_U16,
+	                                  OperatorToken::EXP_RLE_I32_SLPATCH_U16,
+	                                  OperatorToken::EXP_RLE_I16_SLPATCH_U16,
+	                                  OperatorToken::EXP_RLE_I08_SLPATCH_U16,
+	                                  OperatorToken::EXP_DELTA_I64,
+	                                  OperatorToken::EXP_DELTA_I32,
+	                                  OperatorToken::EXP_DELTA_I16,
+	                                  OperatorToken::EXP_DELTA_I08,
+	                                  OperatorToken::EXP_DELTA_U08,
+	                                  OperatorToken::EXP_CROSS_RLE_I64,
+	                                  OperatorToken::EXP_CROSS_RLE_I32,
+	                                  OperatorToken::EXP_CROSS_RLE_I16,
+	                                  OperatorToken::EXP_CROSS_RLE_I08,
+	                                  OperatorToken::EXP_CROSS_RLE_U08}) {
+		conn.disable_encoding(token);
+	}
+}
+
 /*--------------------------------------------------------------------------------------------------------------------*\
  * Run metadata
  *
@@ -658,6 +688,7 @@ void write_run_metadata(const path& out_path, const string& driver) {
 	}
 	out << "\n";
 	out << "seed," << SEED << "\n";
+	out << "wizard_codec_set," << (shared_codecs_enabled() ? "shared" : "full") << "\n";
 }
 
 /*--------------------------------------------------------------------------------------------------------------------*\
@@ -674,11 +705,18 @@ path write_fls(const DatasetSpec& spec, const RowSpec& row_spec, const path& out
 		conn.force_schema_pool(row_spec.tokens.empty() ? vector<OperatorToken> {row_spec.token} : row_spec.tokens);
 		break;
 	case Mode::Wizard:
-		break; // the default candidate pool, i.e. what FastLanes would do on its own
+		// the default candidate pool, i.e. what FastLanes would do on its own
+		if (shared_codecs_enabled()) {
+			disable_non_shared_codecs(conn);
+		}
+		break;
 	case Mode::WizardNoSis:
 		// Cast() can narrow the column, so both widths have to go or the wizard just picks the other one.
 		conn.disable_encoding(OperatorToken::EXP_SUBINTSPLIT_I64);
 		conn.disable_encoding(OperatorToken::EXP_SUBINTSPLIT_I32);
+		if (shared_codecs_enabled()) {
+			disable_non_shared_codecs(conn);
+		}
 		break;
 	case Mode::WizardLimited:
 		// Limited codec-set comparison: keep only {RLE, Dictionary, FFOR, FFOR_slpatch, Uncompressed, Frequency,
@@ -737,8 +775,11 @@ sp<dec_subintsplit_opr<PT>> find_operator(RowgroupReader& rowgroup_reader) {
 /*--------------------------------------------------------------------------------------------------------------------*\
  * Per-encoding measurement
 \*--------------------------------------------------------------------------------------------------------------------*/
+// Returns whether every compared probe matched. A mismatch is reported and recorded (metric "validated" = 0) rather
+// than thrown, so one wrong arm cannot hide every other arm's numbers; a missing read path or an empty comparison
+// still throws, since then there is nothing to validate.
 template <typename PT>
-void cross_check(const DatasetSpec&          spec,
+bool cross_check(const DatasetSpec&          spec,
                  const RowSpec&              row_spec,
                  vector<up<RowgroupReader>>& readers,
                  Harness<PT>&                harness,
@@ -748,6 +789,7 @@ void cross_check(const DatasetSpec&          spec,
 	// wrong and fast.
 	const n_t n_checked = std::min<n_t>(2, plan.layout.n_rowgroups);
 	n_t       n_compared {0};
+	n_t       n_mismatched {0};
 
 	for (n_t rg {0}; rg < n_checked; ++rg) {
 		const auto  rowgroup = readers[rg]->materialize();
@@ -762,11 +804,11 @@ void cross_check(const DatasetSpec&          spec,
 			const PT    expected = column->data[(vec_idx * CFG::VEC_SZ) + row];
 			const PT    got      = harness.value_at(rg, vec_idx, row);
 			if (expected != got) {
-				throw std::runtime_error("bench_subintsplit: decode-then-index harness disagrees with materialize() "
-				                         "for " +
-				                         spec.name + "/" + row_spec.label + " at rowgroup " + std::to_string(rg) +
-				                         " vector " + std::to_string(vec_idx) + " row " + std::to_string(row) +
-				                         ": expected " + std::to_string(expected) + " got " + std::to_string(got));
+				std::cout << "   !! VALIDATION FAILED: decode-then-index harness disagrees with materialize() for "
+				          << spec.name << "/" << row_spec.label << " at rowgroup " << rg << " vector " << vec_idx
+				          << " row " << row << ": expected " << static_cast<int64_t>(expected) << " got "
+				          << static_cast<int64_t>(got) << std::endl;
+				++n_mismatched;
 			}
 			++n_compared;
 		}
@@ -779,7 +821,9 @@ void cross_check(const DatasetSpec&          spec,
 	if (n_compared == 0) {
 		throw std::runtime_error("bench_subintsplit: cross-check compared nothing for " + spec.name);
 	}
-	std::cout << "   (harness cross-checked against materialize() on " << n_compared << " probes)" << std::endl;
+	std::cout << "   (harness cross-checked against materialize() on " << n_compared << " probes, " << n_mismatched
+	          << " mismatched)" << std::endl;
+	return n_mismatched == 0;
 }
 
 template <typename PT>
@@ -809,7 +853,7 @@ void bench_sis_paths(const DatasetSpec&          spec,
 		bool varies       = false;
 		for (n_t rg {1}; rg < plan.layout.n_rowgroups; ++rg) {
 			min_sections = std::min(min_sections, oprs[rg]->bit_starts.size());
-			if (oprs[rg]->bit_starts != oprs[0]->bit_starts) {
+			if (oprs[rg]->bit_starts != oprs[0]->bit_starts || oprs[rg]->section_tokens != oprs[0]->section_tokens) {
 				varies = true;
 			}
 		}
@@ -822,6 +866,11 @@ void bench_sis_paths(const DatasetSpec&          spec,
 		// only populated for plain-FFOR sections now that a section can be any of {Uncompressed,
 		// Constant, RLE, Dictionary, FFOR, FFOR_SLPATCH, FrequencyPartition}) when every rowgroup agrees
 		// it's plain FFOR; otherwise report the token instead of dereferencing a null segment view.
+		// Rowgroup 0's per-section codecs; other rowgroups may differ, flagged by varies_by_rowgroup like the starts.
+		vector<string> codecs;
+		for (n_t s {0}; s < n_sections; ++s) {
+			codecs.push_back(token_to_string(oprs[0]->section_tokens[s]));
+		}
 		vector<string> bw_medians;
 		for (n_t s {0}; s < min_sections; ++s) {
 			const bool all_plain_ffor = std::all_of(
@@ -849,7 +898,7 @@ void bench_sis_paths(const DatasetSpec&          spec,
 		       static_cast<double>(n_sections),
 		       "sections",
 		       n_sections,
-		       "starts=" + join(starts, ";") + "|bw_med=" + join(bw_medians, ";") +
+		       "starts=" + join(starts, ";") + "|bw_med=" + join(bw_medians, ";") + "|codecs=" + join(codecs, ";") +
 		           (varies ? "|varies_by_rowgroup" : ""));
 
 		// Native point access: position arithmetic, no vector decode.
@@ -1031,7 +1080,8 @@ void bench_read_paths(const DatasetSpec&          spec,
                       vector<up<RowgroupReader>>& readers,
                       const ProbePlan&            plan) {
 	Harness<PT> harness {readers, plan.layout};
-	cross_check<PT>(spec, row_spec, readers, harness, plan);
+	const bool  validated = cross_check<PT>(spec, row_spec, readers, harness, plan);
+	record(spec.name, row_spec.group, row_spec.label, "validated", validated ? 1.0 : 0.0, "bool");
 
 	// Bulk decode: every rowgroup, every vector.
 	const double bulk_ms = median_over(BULK_REPS, plan.layout.n_rowgroups * 1000, [&] {

@@ -87,14 +87,12 @@ charge the full header against a handful of vectors and unfairly penalise the en
 
 ## Split selection
 
-Unchanged by per-section codec selection ([Format](#format)): this DP still only ever measures
-FFOR width when deciding where to split, exactly as it did before that existed. Mirrors Nimble's
-own two-phase design in spirit — Nimble's split DP also uses a cheap multi-codec cost *estimate*
-purely to steer where splits go, then a separate, later step (`encodeNested`, Nimble's ordinary
-top-level encoder-selection machinery) picks each section's real codec on real per-section
-statistics. This port keeps the DP's cost model to the one thing that's exactly, not
-approximately, computable (FFOR width), and does the real per-section pick afterward the same
-way Nimble does — on real data, via the same machinery the top-level wizard already uses.
+The DP prices every candidate bit range with the codecs a section can actually end up with, the
+same menu the per-section selector ([Format](#format)) offers: Uncompressed, Constant, Dictionary,
+RLE, FFOR, FFOR_SLPATCH and Frequency. Mirrors Nimble's own two-phase design — Nimble's split DP
+also uses a cheap multi-codec cost *estimate* purely to steer where splits go, then a separate,
+later step (`encodeNested`) picks each section's real codec on real per-section statistics. Here
+the later step is the same `TryExpr`/`ChooseBestExpr` machinery the top-level wizard uses.
 
 `src/include/fls/expression/subintsplit_selector.hpp`. A dynamic program over bit positions:
 `dp[k][i]` is the minimum cost of covering bits `[0, i)` with exactly *k* sections, and the
@@ -102,19 +100,27 @@ answer is the best over `k <= max_sections`. Carrying the section count as a DP 
 (rather than rejecting oversized plans afterwards) gives the true optimum among admissible
 plans instead of a fallback with no optimality guarantee.
 
-The cost oracle is **measured, not modelled**. Because FastLanes bit-packs per vector with a
-per-vector FFOR base, the cost of a candidate range is exactly
+The cost of a candidate range is the **minimum over those codecs** of a size estimate computed on
+the (at most 8) sampled vectors, each following the codec's real FastLanes layout including its
+per-vector metadata (the table is in the header comment): FFOR from the per-vector
+`bit_width(max - min)`, FFOR_SLPATCH from the best window of `n - k` sorted values for each
+`k < 20` exceptions, RLE from the run count, Frequency from the exceptions to the most frequent
+value, Dictionary from the distinct count (extrapolated as `ndv + f1 * (scale - 1)`, which errs
+towards over-estimating), Constant when the sample has one distinct value. The sweep keeps the
+sample sorted by the current range value and extends ranges one high bit at a time with a stable
+partition, so every candidate costs O(n) rather than a sort. `section_codecs = SECTION_CODEC_FFOR`
+reproduces the original FFOR-width-only model exactly.
 
-```
-sum over sampled vectors of  1024 * bit_width(max - min)  of that bit range
-```
+The FFOR-only model was blind to e.g. a low-cardinality wide field: FFOR prices it at its full
+per-vector range, so cutting it off never looked worthwhile, while Dictionary stores it in a
+couple of bits (unit test `CodecAwareCostBeatsFforOnlyOnLowCardinalityField`: 18.2 vs 12.1
+bits/value). The price is selector time: roughly 5x the FFOR-only sweep (~160 ms vs ~30 ms per
+call on 8 random 64-bit vectors), paid once per column per rowgroup at encode time.
 
-scaled to the full column. Nimble needs seven closed-form encoding-size models here; the port
-needs none, because the thing being predicted is directly computable.
-
-Validation: on the synthetic snowflake column, the selector estimated 19.31 bits/value and the
-encoder achieved 19.6, and it recovers the assumed field boundaries from the data alone —
-`bit_starts = [0, 12, 22]`, exactly the synthetic generator's layout. On the real Twitter
+Validation: on the synthetic snowflake column the FFOR-only selector estimated 19.31 bits/value
+(the encoder achieved 19.6) with `bit_starts = [0, 12, 22]`; the codec-aware selector estimates
+17.2 with `bit_starts = [0, 12, 16]` — the machine ids {3, 7, 9, 11} only use bits 12..15, and the
+all-zero bits 16..21 cost nothing in the timestamp section. On the real Twitter
 snowflake IDs (`snowflake_i64_real`) it settles on a 4-way split instead,
 `bit_starts = [0, 12, 17, 22]` — real IDs aren't as cleanly aligned to the idealized
 timestamp/machine/sequence boundary as the synthetic generator assumes, which the DP picks up on
@@ -373,7 +379,7 @@ from [Reading these numbers honestly](#reading-these-numbers-honestly) apply unc
 |---|---|---|---|
 | Section codec | per-section choice from Trivial/Dict/RLE/… | per-section choice from {Uncompressed, Constant, RLE, Dictionary, FFOR, FFOR_SLPATCH, FrequencyPartition} | closed, in spirit: `physical_operator`'s `sp<PhysicalExpr>` alternative lets a section carry a real nested child expression, chosen the same way Nimble's `encodeNested` chooses one — real measured cost, run after the split DP, not the DP's own model. Narrower in scope than Nimble's full codec zoo (no ALP/PFOR/Varint) |
 | Section storage | narrowest type that fits | column's unsigned type | costs nothing in size (`bw * 1024 / 8` either way), only decode bandwidth |
-| Cost model (splits) | seven closed-form models | measured FFOR widths | see [Split selection](#split-selection) |
+| Cost model (splits) | seven closed-form models | minimum of seven sampled size estimates (the section codec menu) | see [Split selection](#split-selection) |
 | Cost model (per-section codec) | real statistics via `encodeNested`, same as top-level columns | real statistics via the same `TryExpr`/`ChooseBestExpr` oracle the top-level wizard uses | same design as Nimble's, reusing FastLanes' existing measured-cost machinery instead of duplicating it |
 | Point access | `skip(n)` + `materialize(1)`, forward cursor | O(1) position arithmetic for plain-FFOR/Constant sections; decode-and-cache per `PointTo(vec_idx)` for everything else | FastLanes' fixed vectors make O(1) possible for the codecs where nothing sits between the packed bits and the value; Nimble's cursor is stateful and forward-only regardless of codec |
 | Types | 32/64-bit ints and floats | `i64`, `i32` | scope |
@@ -404,6 +410,16 @@ scripts/run_subintsplit_tables.sh
 That writes `benchmark/result/subintsplit/subintsplit.csv` and
 [`tables/subintsplit.md`](../tables/subintsplit.md). `--skip-bench` re-renders the tables from
 the existing CSV, `--rows N` changes the dataset size.
+
+`bench_subintsplit` also reads `FLS_SUBINTSPLIT_MANIFEST` (a `name,dir,type` CSV replacing the
+built-in dataset list) and `FLS_SUBINTSPLIT_SHARED_CODECS=1`, which holds both wizard arms to the
+codec set shared with the Nimble and BtrBlocks harnesses — Uncompressed, Constant, Dictionary,
+RLE, FFOR_SLPATCH, Frequency, FFOR, plus SubIntSplit in `wizard_with_sis` — by disabling
+RLE_slpatch, Delta and CrossRLE at every integer width (the [limited](#limited-codec-set-comparison)
+set). SubIntSplit sections already choose from exactly that set. Unset, the wizard keeps its full
+pool; `subintsplit_run_metadata.csv` records which via `wizard_codec_set`. Each arm also records a
+`validated` row (1/0) from the probe cross-check against `materialize()`; a mismatch no longer
+aborts the run.
 
 The 2^20-row datasets are ~38 MB and are therefore **not committed** — the driver regenerates
 them deterministically from fixed seeds into `bench-build/subintsplit-data`. The committed

@@ -10,7 +10,6 @@
 #include "fls/std/span.hpp"
 #include "fls/std/vector.hpp"
 #include <algorithm>
-#include <array>
 #include <bit>
 #include <limits>
 #include <type_traits>
@@ -25,22 +24,41 @@
  *
  * Cost oracle
  * -----------
- * Unlike the Nimble reference selector this file is ported from, the cost of a candidate range is not modelled with
- * closed-form formulas for a zoo of encodings. In FastLanes every section is FFOR-packed per 1024-value vector with
- * its own per-vector base and bit width, so the cost is directly *measurable* on sampled vectors:
+ * Every section is stored with one of the codecs subintsplit_section_selector.hpp may pick for it: Uncompressed,
+ * Constant, Dictionary (FFOR-packed indices), RLE, FFOR, FFOR_SLPATCH (patched FFOR) and Frequency. The DP must see
+ * the same menu when it places boundaries, otherwise it is blind to e.g. a low-cardinality wide field that Dictionary
+ * stores in a couple of bits but FFOR prices at its full per-vector range. So the cost of a candidate range [l, r] is
+ * the *minimum over the enabled section codecs* of a cheap size estimate computed on the sampled vectors, where
  *
- *     for a candidate range [l, r], w = r - l + 1
- *     for every sampled vector v:
- *         section values = (value >> l) & ((1 << w) - 1)
- *         bw_v           = bit_width(max(section values) - min(section values))   // FFOR base = per-vector min
- *     cost_bits(l, r) = (n_vectors_total / |V|) * SUM_v [ VEC_SZ * bw_v + 8 * (sizeof(PT) + 1) ]
- *                       + section_overhead_bits
+ *     section values = (value >> l) & ((1 << w) - 1),    w = r - l + 1
  *
- * The 8 * (sizeof(PT) + 1) term is the per-vector FFOR base plus the per-vector bit-width byte.
+ * and each estimate mirrors the codec's real FastLanes layout, per-vector metadata included:
+ *
+ *     FFOR          VEC_SZ * bit_width(max - min)                 + base + bit-width byte              per vector
+ *     FFOR_SLPATCH  min over k < 20 exceptions of
+ *                   VEC_SZ * bit_width(best window of n - k values) + k * (value + u16 position)
+ *                                                                  + u16 count + base + bit-width byte per vector
+ *     RLE           runs * value + rsum bases + VEC_SZ * (runs > 1) + u16 FFOR base + bit-width byte   per vector
+ *     Frequency     exceptions * (value + u16 position) + u16 count                                    per vector
+ *                   + the most frequent value                                                          once
+ *     Dictionary    VEC_SZ * bit_width(ndv - 1) + index base + bit-width byte                          per vector
+ *                   + ndv * value                                                                      once
+ *     Constant      value (only when the sample holds a single distinct value)                         once
+ *     Uncompressed  VEC_SZ * value                                                                     per vector
+ *
+ * Per-vector terms are summed over the sampled vectors and scaled by n_vectors_total / |V|; once-per-section terms
+ * (the dictionary, the frequent value, the constant) are not scaled. The dictionary size ndv is extrapolated from the
+ * sample as ndv_sample + f1 * (scale - 1), f1 being the values seen exactly once: saturated low-cardinality fields
+ * (f1 ~ 0) keep their sample ndv, while all-distinct fields scale linearly. This deliberately errs towards
+ * over-estimating ndv, so Dictionary only steers a boundary when it clearly wins. The dictionary index bit width uses
+ * the whole-section ndv, an upper bound on the per-vector index range. Every value is stored at sizeof(PT) - a section
+ * keeps the column's physical type. section_overhead_bits is charged once per section on top, whatever the codec.
+ *
+ * Setting section_codecs to SECTION_CODEC_FFOR reproduces the original FFOR-width-only model exactly.
  *
  * A consequence worth internalising: because FFOR already subtracts a per-vector base, *constant high bits are
  * already free* in a single wide section. Splitting only wins when two fields vary independently, so that the
- * concatenated value spans a far wider range than the sum of the field ranges.
+ * concatenated value spans a far wider range than the sum of the field costs.
  *
  * split_penalty
  * -------------
@@ -89,9 +107,30 @@ struct SubIntSplitPlan {
 };
 
 /*--------------------------------------------------------------------------------------------------------------------*\
+ * Section codecs the split cost may price a range with (a bit set). SECTION_CODECS_ALL is exactly the menu
+ * subintsplit_section_selector.hpp offers a section, see the file comment.
+\*--------------------------------------------------------------------------------------------------------------------*/
+using section_codec_set_t = uint32_t;
+
+constexpr section_codec_set_t SECTION_CODEC_UNCOMPRESSED = 1U << 0U;
+constexpr section_codec_set_t SECTION_CODEC_CONSTANT     = 1U << 1U;
+constexpr section_codec_set_t SECTION_CODEC_DICTIONARY   = 1U << 2U;
+constexpr section_codec_set_t SECTION_CODEC_RLE          = 1U << 3U;
+constexpr section_codec_set_t SECTION_CODEC_FFOR         = 1U << 4U;
+constexpr section_codec_set_t SECTION_CODEC_FFOR_SLPATCH = 1U << 5U;
+constexpr section_codec_set_t SECTION_CODEC_FREQUENCY    = 1U << 6U;
+constexpr section_codec_set_t SECTION_CODECS_ALL         = SECTION_CODEC_UNCOMPRESSED | SECTION_CODEC_CONSTANT |
+                                                   SECTION_CODEC_DICTIONARY | SECTION_CODEC_RLE | SECTION_CODEC_FFOR |
+                                                   SECTION_CODEC_FFOR_SLPATCH | SECTION_CODEC_FREQUENCY;
+
+/*--------------------------------------------------------------------------------------------------------------------*\
  * SubIntSplitSelectorConfig
 \*--------------------------------------------------------------------------------------------------------------------*/
 struct SubIntSplitSelectorConfig {
+	// Codecs whose estimated size the split cost takes the minimum over. SECTION_CODEC_FFOR alone is the original
+	// FFOR-width-only model; an empty set falls back to it.
+	section_codec_set_t section_codecs {SECTION_CODECS_ALL};
+
 	// Narrowest section the selector is allowed to emit. Sections narrower than this are never worth their segment
 	// overhead in practice, and forbidding them shrinks the candidate space.
 	bw_t min_segment_width {1};
@@ -107,8 +146,9 @@ struct SubIntSplitSelectorConfig {
 	double section_overhead_bits {3.0 * 8.0 * 8.0};
 
 	// Upper bound on how many of the supplied vectors are actually measured. The candidate sweep is O(64 * 64 * 1024)
-	// per vector, so this is the knob that bounds selector runtime; the sample is spread evenly over the supplied
-	// vectors and the resulting cost is scaled back up to n_vectors_total.
+	// per vector (plus column-wide statistics over all measured vectors), so this is the knob that bounds selector
+	// runtime; the sample is spread evenly over the supplied vectors and the resulting cost is scaled back up to
+	// n_vectors_total.
 	n_t max_sampled_vectors {8};
 };
 
@@ -129,101 +169,269 @@ constexpr double per_vector_overhead_bits() noexcept {
 	return 8.0 * static_cast<double>(sizeof(PT) + 1);
 }
 
+// Layout constants of the section codecs, replicated for the same standalone-testability reason as VEC_SZ.
+constexpr n_t    SLPATCH_EXCEPTION_LIMIT = 20;   // analyze_operator_impl.hpp LOCAL_EXC_LIMIT_C: strictly fewer allowed
+constexpr double VEC_IDX_BITS            = 16.0; // vec_idx_t: exception positions and exception counts
+constexpr double RSUM_BASES_BITS         = 8.0 * 128.0; // CFG::UNIFIED_TRANSPOSED::BASES_SIZE, RLE's run-index bases
+
 /*--------------------------------------------------------------------------------------------------------------------*\
- * BitRangeExtractor
+ * RangeStats : what the codec size estimates need to know about one candidate range on the sampled vectors.
+\*--------------------------------------------------------------------------------------------------------------------*/
+struct RangeStats {
+	// Column-wide, over all sampled values.
+	n_t n_distinct {0};  // distinct values
+	n_t n_singleton {0}; // values seen exactly once (f1)
+	// Summed over sampled vectors.
+	n_t    sum_ffor_bw {0};        // FFOR bit width
+	double sum_slpatch_bits {0.0}; // best patched-FFOR payload (packed bits + exceptions), metadata excluded
+	n_t    sum_runs {0};           // RLE runs
+	n_t    n_multi_run {0};        // vectors with more than one run (their run-index deltas need 1 bit)
+	n_t    sum_freq_exc {0};       // values differing from the column's most frequent value
+};
+
+/*--------------------------------------------------------------------------------------------------------------------*\
+ * BitRangeSweep
  *
- * Incrementally materialises bits [bit_start .. bit_end] of the bound vector, extending one bit at a time so that the
- * O(64 * 64) candidate sweep costs one pass over the vector per candidate instead of one pass per bit per candidate.
- * That reuse is the whole reason this class exists - re-extracting every (l, r) from scratch would be 64x the work.
+ * Maintains, for the bound sampled vectors, the statistics of the range [bit_start .. bit_end] while it grows one bit
+ * at a time, so the O(64 * 64) candidate sweep costs O(n) per candidate instead of a sort per candidate.
  *
- * The min/max fold is fused into the same pass, so a range extension touches the data exactly once, and the extractor
- * is deliberately bound to a *single* 1024-value vector at a time: at 8 KiB the materialised buffer stays L1-resident
- * across the entire 2080-candidate sweep. Sweeping all sampled vectors at once instead was measured ~10x slower.
+ * The trick is to keep copies of the sampled raw values sorted by the current range value. Pulling the next *higher*
+ * bit into the range makes that bit the most significant one, so the new sorted order is simply a stable partition of
+ * the old one by the new bit - O(n), no re-sort, sequential and branch-free. Two such copies are kept:
+ *
+ *     m_column  all sampled values sorted together: distinct count, singleton count and most frequent value
+ *               (Dictionary, Frequency, Constant)
+ *     m_vectors every vector's values sorted within the vector: FFOR width (last - first) and patched-FFOR windows
+ *
+ * RLE's run boundaries in original order only ever gain members as bits are added, so they are OR-ed in per bit.
+ *
+ * Unlike an FFOR-only sweep this cannot visit one vector at a time, because Dictionary and Frequency depend on
+ * column-wide statistics. The working set is a few copies of at most max_sampled_vectors * 1024 values, which stays
+ * L2-resident at the default of 8 vectors.
 \*--------------------------------------------------------------------------------------------------------------------*/
 template <typename UT>
-class BitRangeExtractor {
+class BitRangeSweep {
 public:
-	explicit BitRangeExtractor(const n_t capacity)
-	    : m_values(capacity, UT {0})
-	    , m_data(nullptr)
-	    , m_n(0)
+	// `data_p` holds the sampled vectors back to back; `offsets` has one entry per vector plus the end.
+	BitRangeSweep(const UT* data_p, const vector<n_t>& offsets)
+	    : m_data(data_p)
+	    , m_n(offsets.back())
+	    , m_offsets(offsets)
+	    , m_column(offsets.back(), UT {0})
+	    , m_vectors(offsets.back(), UT {0})
+	    , m_zeros(offsets.back(), UT {0})
+	    , m_ones(offsets.back(), UT {0})
+	    , m_run_start(offsets.back(), 0)
+	    , m_varying_bits(0)
 	    , m_bit_start(0)
 	    , m_bit_end(0) {
+		for (n_t i {0}; i < m_n; ++i) {
+			m_varying_bits = static_cast<UT>(m_varying_bits | (m_data[i] ^ m_data[0]));
+		}
 	}
 
-	// Bind the vector the following reset/extend calls operate on.
-	void bind(const UT* data_p, const n_t n) noexcept {
-		m_data = data_p;
-		m_n    = n;
-	}
-
-	// Start a fresh range at [bit_start, bit_start]; returns the FFOR bit width of the bound vector for that range.
-	bw_t reset(const bw_t bit_start) {
+	// Start a fresh range at [bit_start, bit_start].
+	void reset(const bw_t bit_start) {
 		m_bit_start = bit_start;
 		m_bit_end   = bit_start;
-		// __restrict is load-bearing: without it the compiler must assume the source and the materialised buffer may
-		// alias, which serialises the load/store chain and blocks vectorisation of this hot sweep.
-		const UT* __restrict src_p = m_data;
-		UT* __restrict vals_p      = m_values.data();
-		for (n_t i {0}; i < m_n; ++i) {
-			vals_p[i] = (src_p[i] >> bit_start) & UT {1};
+		std::copy(m_data, m_data + m_n, m_column.begin());
+		std::copy(m_data, m_data + m_n, m_vectors.begin());
+		partition_all(bit_start);
+		for (n_t i {1}; i < m_n; ++i) {
+			m_run_start[i] = static_cast<uint8_t>(((m_data[i] ^ m_data[i - 1]) >> bit_start) & UT {1});
 		}
-		return fold();
+		for (n_t v {0}; v + 1 < m_offsets.size(); ++v) {
+			m_run_start[m_offsets[v]] = 1; // every vector is run-length encoded on its own
+		}
 	}
 
-	// Pull the next higher bit into the range, i.e. [m_bit_start, m_bit_end + 1]; returns the new FFOR bit width.
-	bw_t extend_one_bit() {
+	// Pull the next higher bit into the range, i.e. [m_bit_start, m_bit_end + 1].
+	void extend_one_bit() {
 		++m_bit_end;
-		const UT   shift           = static_cast<UT>(m_bit_end - m_bit_start);
-		const bw_t bit_end         = m_bit_end;
-		const UT* __restrict src_p = m_data;
-		UT* __restrict vals_p      = m_values.data();
-		for (n_t i {0}; i < m_n; ++i) {
-			vals_p[i] = static_cast<UT>(vals_p[i] | (((src_p[i] >> bit_end) & UT {1}) << shift));
+		const bw_t bit_end = m_bit_end;
+		partition_all(bit_end);
+		if (((m_varying_bits >> bit_end) & UT {1}) == 0) {
+			return; // nor can it add a run boundary
 		}
-		return fold();
+		const UT* __restrict src_p   = m_data;
+		uint8_t* __restrict starts_p = m_run_start.data();
+		for (n_t i {1}; i < m_n; ++i) {
+			starts_p[i] = static_cast<uint8_t>(starts_p[i] | (((src_p[i] ^ src_p[i - 1]) >> bit_end) & UT {1}));
+		}
 	}
 
-	[[nodiscard]] const vector<UT>& values() const noexcept {
-		return m_values;
-	}
+	// Statistics of the current range; `value_bits` is the stored width of one section value (8 * sizeof(PT)).
+	[[nodiscard]] RangeStats measure(const double value_bits) const {
+		const bw_t width = static_cast<bw_t>(m_bit_end - m_bit_start + 1);
+		const UT   mask  = width >= sizeof(UT) * 8 ? ~UT {0} : static_cast<UT>((UT {1} << width) - 1);
+		const bw_t shift = m_bit_start;
+		const auto value = [&](const UT raw) {
+			return static_cast<UT>((raw >> shift) & mask);
+		};
 
-private:
-	// FastLanes FFOR uses the per-vector minimum as base, so the packed width is bit_width(max - min).
-	// Four independent accumulator pairs: a single min/max pair is a loop-carried dependency that keeps the reduction
-	// scalar and roughly halves throughput. Kept in its own pass rather than fused into the extension loop, which
-	// measured ~2x faster because the extension loop then vectorises cleanly.
-	[[nodiscard]] bw_t fold() const noexcept {
-		if (m_n == 0) {
-			return 0;
-		}
-		constexpr UT ut_max         = std::numeric_limits<UT>::max();
-		const UT* __restrict vals_p = m_values.data();
-		std::array<UT, 4> min_v {ut_max, ut_max, ut_max, ut_max};
-		std::array<UT, 4> max_v {0, 0, 0, 0};
-		const n_t         tail = m_n & ~n_t {3};
-		for (n_t i {0}; i < tail; i += 4) {
-			for (n_t k {0}; k < 4; ++k) {
-				min_v[k] = std::min(min_v[k], vals_p[i + k]);
-				max_v[k] = std::max(max_v[k], vals_p[i + k]);
+		RangeStats stats;
+
+		/* Column-wide: walk the groups of equal values in sorted order. Strict `>` keeps the smallest of equally
+		 * frequent values, so the most frequent value is deterministic. ---------------------------------------------*/
+		UT  top_value {0};
+		n_t top_count {0};
+		n_t group_begin {0};
+		UT  group_value = value(m_column[0]);
+		for (n_t i {1}; i <= m_n; ++i) {
+			const UT current = i < m_n ? value(m_column[i]) : group_value;
+			if (i < m_n && current == group_value) {
+				continue;
 			}
+			const n_t count = i - group_begin;
+			++stats.n_distinct;
+			stats.n_singleton += count == 1 ? 1 : 0;
+			if (count > top_count) {
+				top_count = count;
+				top_value = group_value;
+			}
+			group_begin = i;
+			group_value = current;
 		}
-		for (n_t i {tail}; i < m_n; ++i) {
-			min_v[0] = std::min(min_v[0], vals_p[i]);
-			max_v[0] = std::max(max_v[0], vals_p[i]);
+
+		/* Per vector, on the vector's own sorted values. ------------------------------------------------------------*/
+		for (n_t v {0}; v + 1 < m_offsets.size(); ++v) {
+			const n_t beg = m_offsets[v];
+			const n_t n   = m_offsets[v + 1] - beg;
+			const UT* s   = m_vectors.data() + beg;
+
+			stats.sum_ffor_bw += static_cast<n_t>(std::bit_width(static_cast<uint64_t>(value(s[n - 1]) - value(s[0]))));
+
+			// Patched FFOR: with k exceptions the packed values are the best n - k consecutive sorted values.
+			double    best_slpatch = std::numeric_limits<double>::infinity();
+			const n_t max_exc      = std::min<n_t>(SLPATCH_EXCEPTION_LIMIT - 1, n - 1);
+			for (n_t k {0}; k <= max_exc; ++k) {
+				UT window = std::numeric_limits<UT>::max();
+				for (n_t i {0}; i <= k; ++i) {
+					window = std::min<UT>(window, static_cast<UT>(value(s[i + n - 1 - k]) - value(s[i])));
+				}
+				const double bits =
+				    static_cast<double>(SUBINTSPLIT_VEC_SZ * std::bit_width(static_cast<uint64_t>(window))) +
+				    static_cast<double>(k) * (value_bits + VEC_IDX_BITS);
+				best_slpatch = std::min(best_slpatch, bits);
+			}
+			stats.sum_slpatch_bits += best_slpatch;
+
+			n_t runs {0};
+			for (n_t i {beg}; i < beg + n; ++i) {
+				runs += m_run_start[i];
+			}
+			stats.sum_runs += runs;
+			stats.n_multi_run += runs > 1 ? 1 : 0;
+
+			const UT* lo = std::partition_point(s, s + n, [&](const UT raw) { return value(raw) < top_value; });
+			const UT* hi = std::partition_point(lo, s + n, [&](const UT raw) { return value(raw) == top_value; });
+			stats.sum_freq_exc += n - static_cast<n_t>(hi - lo);
 		}
-		const UT lo = std::min(std::min(min_v[0], min_v[1]), std::min(min_v[2], min_v[3]));
-		const UT hi = std::max(std::max(max_v[0], max_v[1]), std::max(max_v[2], max_v[3]));
-		return static_cast<bw_t>(std::bit_width(static_cast<uint64_t>(hi - lo)));
+		return stats;
 	}
 
 private:
-	vector<UT> m_values;
-	const UT*  m_data;
-	n_t        m_n;
-	bw_t       m_bit_start;
-	bw_t       m_bit_end;
+	// Stable partition of values[beg, end) by bit `bit`: zeros first, ones after, each in their old order. Both
+	// outputs are written unconditionally and only the cursors move, so the loop has no data-dependent branch.
+	void partition(vector<UT>& values, const n_t beg, const n_t end, const bw_t bit) {
+		UT* __restrict zeros_p = m_zeros.data();
+		UT* __restrict ones_p  = m_ones.data();
+		UT* __restrict vals_p  = values.data();
+		n_t zeros {0};
+		n_t ones {0};
+		for (n_t i {beg}; i < end; ++i) {
+			const UT  raw    = vals_p[i];
+			const n_t is_one = static_cast<n_t>((raw >> bit) & UT {1});
+			zeros_p[zeros]   = raw;
+			ones_p[ones]     = raw;
+			zeros += 1 - is_one;
+			ones += is_one;
+		}
+		std::copy(zeros_p, zeros_p + zeros, vals_p + beg);
+		std::copy(ones_p, ones_p + ones, vals_p + beg + zeros);
+	}
+
+	void partition_all(const bw_t bit) {
+		if (((m_varying_bits >> bit) & UT {1}) == 0) {
+			return; // a bit that never varies in the sample leaves every order unchanged
+		}
+		partition(m_column, 0, m_n, bit);
+		for (n_t v {0}; v + 1 < m_offsets.size(); ++v) {
+			partition(m_vectors, m_offsets[v], m_offsets[v + 1], bit);
+		}
+	}
+
+private:
+	const UT*       m_data;
+	n_t             m_n;
+	vector<n_t>     m_offsets;
+	vector<UT>      m_column;  // all sampled raw values, sorted by the current range value
+	vector<UT>      m_vectors; // each vector's raw values, sorted by the current range value within the vector
+	vector<UT>      m_zeros;   // partition scratch
+	vector<UT>      m_ones;    // partition scratch
+	vector<uint8_t> m_run_start;
+	UT              m_varying_bits; // bits that are not the same in every sampled value
+	bw_t            m_bit_start;
+	bw_t            m_bit_end;
 };
+
+/*--------------------------------------------------------------------------------------------------------------------*\
+ * estimate_range_bits : the file comment's cost table, minimised over the enabled codecs, for the full column.
+\*--------------------------------------------------------------------------------------------------------------------*/
+template <typename PT>
+[[nodiscard]] double estimate_range_bits(const RangeStats&         stats,
+                                         const n_t                 n_used,
+                                         const n_t                 n_values,
+                                         const double              scale,
+                                         const section_codec_set_t codecs) {
+	constexpr double value_bits = 8.0 * static_cast<double>(sizeof(PT));
+	constexpr double vec_sz     = static_cast<double>(SUBINTSPLIT_VEC_SZ);
+	const double     n_vec      = static_cast<double>(n_used);
+	const auto       enabled    = [&](const section_codec_set_t codec) {
+        return (codecs & codec) != 0 || (codecs == 0 && codec == SECTION_CODEC_FFOR);
+	};
+
+	double best = std::numeric_limits<double>::infinity();
+	if (enabled(SECTION_CODEC_FFOR)) {
+		const double per_vector =
+		    vec_sz * static_cast<double>(stats.sum_ffor_bw) + (per_vector_overhead_bits<PT>() * n_vec);
+		best = std::min(best, scale * per_vector);
+	}
+	if (enabled(SECTION_CODEC_FFOR_SLPATCH)) {
+		const double per_vector = stats.sum_slpatch_bits + ((per_vector_overhead_bits<PT>() + VEC_IDX_BITS) * n_vec);
+		best                    = std::min(best, scale * per_vector);
+	}
+	if (enabled(SECTION_CODEC_RLE)) {
+		// Run values at full width, run-index deltas (0/1 after rsum) FFOR-packed as u16 with their rsum bases.
+		const double per_vector = (static_cast<double>(stats.sum_runs) * value_bits) +
+		                          (vec_sz * static_cast<double>(stats.n_multi_run)) +
+		                          ((RSUM_BASES_BITS + per_vector_overhead_bits<uint16_t>()) * n_vec);
+		best = std::min(best, scale * per_vector);
+	}
+	if (enabled(SECTION_CODEC_FREQUENCY)) {
+		const double per_vector =
+		    (static_cast<double>(stats.sum_freq_exc) * (value_bits + VEC_IDX_BITS)) + (VEC_IDX_BITS * n_vec);
+		best = std::min(best, (scale * per_vector) + value_bits);
+	}
+	if (enabled(SECTION_CODEC_DICTIONARY)) {
+		const double n_total    = static_cast<double>(n_values) * scale;
+		const double n_distinct = std::min(
+		    n_total, static_cast<double>(stats.n_distinct) + (static_cast<double>(stats.n_singleton) * (scale - 1.0)));
+		if (n_distinct <= 4294967296.0) {
+			const double index_bytes = n_distinct <= 256.0 ? 1.0 : (n_distinct <= 65536.0 ? 2.0 : 4.0);
+			const auto   index_bw    = std::bit_width(static_cast<uint64_t>(std::max(n_distinct, 1.0) - 1.0));
+			const double per_vector  = (vec_sz * static_cast<double>(index_bw) + (8.0 * (index_bytes + 1.0))) * n_vec;
+			best                     = std::min(best, (scale * per_vector) + (n_distinct * value_bits));
+		}
+	}
+	if (enabled(SECTION_CODEC_CONSTANT) && stats.n_distinct == 1) {
+		best = std::min(best, value_bits);
+	}
+	if (enabled(SECTION_CODEC_UNCOMPRESSED)) {
+		best = std::min(best, scale * vec_sz * value_bits * n_vec);
+	}
+	return best;
+}
 
 /*--------------------------------------------------------------------------------------------------------------------*\
  * select_splits_impl : the DP itself, on already-flattened unsigned samples.
@@ -249,49 +457,41 @@ template <typename PT, typename UT>
 	const bw_t min_width    = std::max<bw_t>(config.min_segment_width, 1);
 	const n_t  max_sections = std::max<n_t>(config.max_sections, 1);
 
-	// The sweep costs ~6 ms per sampled 64-bit vector, so cap how many vectors actually get measured. Vectors are
+	// The sweep costs a few ms per sampled 64-bit vector, so cap how many vectors actually get measured. Vectors are
 	// picked evenly spaced (never at random) to keep the selector deterministic and to spread the sample across the
 	// rowgroup rather than biasing it towards the head.
 	const n_t   n_used = std::min<n_t>(n_sampled_vectors, std::max<n_t>(config.max_sampled_vectors, 1));
-	vector<n_t> used_vectors;
-	used_vectors.reserve(n_used);
+	vector<UT>  used_samples;
+	vector<n_t> used_offsets;
+	used_offsets.reserve(n_used + 1);
+	used_offsets.push_back(0);
 	for (n_t i {0}; i < n_used; ++i) {
-		used_vectors.push_back(i * n_sampled_vectors / n_used);
+		const n_t vec_idx = i * n_sampled_vectors / n_used;
+		used_samples.insert(used_samples.end(),
+		                    samples.begin() + static_cast<std::ptrdiff_t>(vector_offsets[vec_idx]),
+		                    samples.begin() + static_cast<std::ptrdiff_t>(vector_offsets[vec_idx + 1]));
+		used_offsets.push_back(used_samples.size());
 	}
 
 	const double scale =
 	    static_cast<double>(std::max<n_t>(n_vectors_total, n_sampled_vectors)) / static_cast<double>(n_used);
-	const double vector_overhead = per_vector_overhead_bits<PT>() * static_cast<double>(n_used);
-	const double split_penalty   = config.split_penalty * static_cast<double>(std::max<n_t>(n_vectors_total, 1));
+	const double split_penalty = config.split_penalty * static_cast<double>(std::max<n_t>(n_vectors_total, 1));
 
-	/* Candidate sweep: sum_bw[l * k_bits + r] = SUM over sampled vectors of the FFOR bit width of range [l, r]. -----*
-	 * The vector loop is outermost so the extractor's materialised buffer stays L1-resident, see BitRangeExtractor.  */
-	vector<n_t> sum_bw(static_cast<size_t>(k_bits) * k_bits, 0);
-
-	n_t max_vector_len {0};
-	for (const n_t vec_idx : used_vectors) {
-		max_vector_len = std::max<n_t>(max_vector_len, vector_offsets[vec_idx + 1] - vector_offsets[vec_idx]);
-	}
-	BitRangeExtractor<UT> extractor {max_vector_len};
-
-	for (const n_t vec_idx : used_vectors) {
-		const n_t beg = vector_offsets[vec_idx];
-		extractor.bind(samples.data() + beg, vector_offsets[vec_idx + 1] - beg);
-		for (bw_t l {0}; l < k_bits; ++l) {
-			sum_bw[static_cast<size_t>(l) * k_bits + l] += extractor.reset(l);
-			for (bw_t r = static_cast<bw_t>(l + 1); r < k_bits; ++r) {
-				sum_bw[static_cast<size_t>(l) * k_bits + r] += extractor.extend_one_bit();
-			}
-		}
-	}
-
-	/* Turn measured bit widths into estimated bits for the full column. --------------------------------------------*/
-	vector<double> cost(static_cast<size_t>(k_bits) * k_bits, std::numeric_limits<double>::infinity());
+	/* Candidate sweep: cost[l * k_bits + r] = estimated bits of range [l, r] for the full column. ------------------*/
+	vector<double>    cost(static_cast<size_t>(k_bits) * k_bits, std::numeric_limits<double>::infinity());
+	BitRangeSweep<UT> sweep {used_samples.data(), used_offsets};
+	const auto        price = [&](const bw_t l, const bw_t r) {
+        const RangeStats stats = sweep.measure(8.0 * static_cast<double>(sizeof(PT)));
+        cost[static_cast<size_t>(l) * k_bits + r] =
+            estimate_range_bits<PT>(stats, n_used, used_samples.size(), scale, config.section_codecs) +
+            config.section_overhead_bits;
+	};
 	for (bw_t l {0}; l < k_bits; ++l) {
-		for (bw_t r {l}; r < k_bits; ++r) {
-			const size_t idx         = static_cast<size_t>(l) * k_bits + r;
-			const double packed_bits = static_cast<double>(SUBINTSPLIT_VEC_SZ * sum_bw[idx]);
-			cost[idx]                = scale * (packed_bits + vector_overhead) + config.section_overhead_bits;
+		sweep.reset(l);
+		price(l, l);
+		for (bw_t r = static_cast<bw_t>(l + 1); r < k_bits; ++r) {
+			sweep.extend_one_bit();
+			price(l, r);
 		}
 	}
 

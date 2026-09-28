@@ -4,15 +4,19 @@
 // test/src/unit_tests/subintsplit_selector_test.cpp
 // ────────────────────────────────────────────────────────
 #include "fls/expression/subintsplit_selector.hpp"
+#include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <random>
+#include <set>
 #include <vector>
 
 namespace {
 
 using fastlanes::n_t;
 using fastlanes::span;
+using fastlanes::subintsplit::SECTION_CODEC_FFOR;
 using fastlanes::subintsplit::select_splits;
 using fastlanes::subintsplit::SubIntSplitPlan;
 using fastlanes::subintsplit::SubIntSplitSelectorConfig;
@@ -94,7 +98,10 @@ TEST(SubIntSplitSelector, SnowflakeFindsFieldBoundaries) {
 
 	EXPECT_GE(plan.segments.size(), 3U) << "timestamp | machine | sequence should give three sections";
 	EXPECT_TRUE(has_boundary_near(plan, 12, 2)) << "expected a boundary at/near the sequence field edge";
-	EXPECT_TRUE(has_boundary_near(plan, 22, 2)) << "expected a boundary at/near the timestamp field edge";
+	// The machine ids {3, 7, 9, 11} only occupy bits 12..15, so bits 16..21 are zero everywhere and either 16 or 22 is
+	// a correct upper edge for the machine field: the codec-aware cost picks 16, the FFOR-only cost picked 22.
+	EXPECT_TRUE(has_boundary_near(plan, 22, 2) || has_boundary_near(plan, 16, 0))
+	    << "expected a boundary at/near the timestamp field edge";
 
 	// Note the margin is bounded by what FFOR already achieves on the unsplit value: FFOR subtracts a per-vector base,
 	// so the single section already costs only 22 + bit_width(timestamp delta) bits rather than the full 64.
@@ -197,7 +204,7 @@ TEST(SubIntSplitSelector, ExactlyOneVector) {
 
 	const SubIntSplitPlan plan = run<uint64_t>(data, 1);
 	expect_covers_all_bits(plan, 64);
-	EXPECT_TRUE(has_boundary_near(plan, 22, 2));
+	EXPECT_TRUE(has_boundary_near(plan, 22, 2) || has_boundary_near(plan, 16, 0)); // see SnowflakeFindsFieldBoundaries
 }
 
 TEST(SubIntSplitSelector, MaxSectionsIsRespected) {
@@ -286,6 +293,94 @@ TEST(SubIntSplitSelector, SpanOfVectorsOverloadMatchesFlatOverload) {
 		EXPECT_EQ(flat.segments[i].bit_end, spans.segments[i].bit_end);
 	}
 	EXPECT_DOUBLE_EQ(flat.estimated_bits, spans.estimated_bits);
+}
+
+/*--------------------------------------------------------------------------------------------------------------------*\
+ * 9. codec-aware split cost: a low-cardinality wide field must be priced at what Dictionary stores it for.
+ *
+ * Bits [0, 10) are a uniformly random 10-bit field; bits [10, 50) take one of only 4 random 40-bit values. FFOR sees
+ * a ~40-bit per-vector range in the high field, so under the FFOR-only model splitting at bit 10 saves nothing
+ * (10 + 40 bits either way) and the split penalty keeps the column whole - whose best real codec is then a 4096-entry
+ * Dictionary at ~18 bits/value. Dictionary stores the high field alone in 2-bit indices, so the codec-aware model must
+ * cut at bit 10, and the resulting plan must really be smaller (~12 bits/value).
+\*--------------------------------------------------------------------------------------------------------------------*/
+std::vector<uint64_t> make_low_cardinality_wide_field(const size_t n) {
+	std::mt19937_64    rng {19};
+	constexpr uint64_t mask40 = (1ULL << 40) - 1;
+	const uint64_t     high[4] {rng() & mask40, rng() & mask40, rng() & mask40, rng() & mask40};
+
+	std::vector<uint64_t> out(n);
+	for (auto& value : out) {
+		value = (high[rng() % 4] << 10) | (rng() & 0x3FFULL);
+	}
+	return out;
+}
+
+// Exact bits of one section on ALL values, as the better of the two codecs relevant here: FFOR (per-vector base and
+// bit width) and Dictionary (8-byte keys once, FFOR-packed u08 indices per vector).
+double exact_section_bits(const std::vector<uint64_t>& values, const int bit_start, const int bit_end) {
+	const int      width = bit_end - bit_start + 1;
+	const uint64_t mask  = width >= 64 ? ~0ULL : ((1ULL << width) - 1);
+
+	double             ffor {0.0};
+	std::set<uint64_t> distinct;
+	n_t                n_vec {0};
+	for (size_t offset {0}; offset < values.size(); offset += VEC_SZ, ++n_vec) {
+		uint64_t lo = ~0ULL;
+		uint64_t hi = 0;
+		for (size_t i {offset}; i < std::min(values.size(), offset + VEC_SZ); ++i) {
+			const uint64_t v = (values[i] >> bit_start) & mask;
+			lo               = std::min(lo, v);
+			hi               = std::max(hi, v);
+			distinct.insert(v);
+		}
+		ffor += static_cast<double>(VEC_SZ * std::bit_width(hi - lo)) + (8.0 * 9.0);
+	}
+	const double index_bw = static_cast<double>(std::bit_width(distinct.size() - 1));
+	const double dict =
+	    (static_cast<double>(distinct.size()) * 64.0) + (static_cast<double>(n_vec) * (VEC_SZ * index_bw + 8.0 * 2.0));
+	return std::min(ffor, dict);
+}
+
+double exact_plan_bits(const std::vector<uint64_t>& values, const SubIntSplitPlan& plan) {
+	double bits {0.0};
+	for (const auto& segment : plan.segments) {
+		bits += exact_section_bits(values, segment.bit_start, segment.bit_end);
+	}
+	return bits;
+}
+
+TEST(SubIntSplitSelector, CodecAwareCostBeatsFforOnlyOnLowCardinalityField) {
+	const std::vector<uint64_t> data = make_low_cardinality_wide_field(VEC_SZ * 16);
+
+	SubIntSplitSelectorConfig ffor_only;
+	ffor_only.section_codecs = SECTION_CODEC_FFOR;
+
+	const SubIntSplitPlan old_plan = run<uint64_t>(data, 16, ffor_only);
+	const SubIntSplitPlan new_plan = run<uint64_t>(data, 16);
+	expect_covers_all_bits(old_plan, 64);
+	expect_covers_all_bits(new_plan, 64);
+
+	EXPECT_FALSE(has_boundary_near(old_plan, 10, 0)) << "FFOR-only sees no gain in cutting off the 40-bit field";
+	EXPECT_TRUE(has_boundary_near(new_plan, 10, 0)) << "the Dictionary-friendly field must get its own section";
+
+	const double n_values = static_cast<double>(data.size());
+	const double old_bpv  = exact_plan_bits(data, old_plan) / n_values;
+	const double new_bpv  = exact_plan_bits(data, new_plan) / n_values;
+	EXPECT_LT(new_bpv, 0.75 * old_bpv) << "old " << old_bpv << " bits/value, new " << new_bpv << " bits/value";
+	// The estimate must be in the right ballpark of what the plan really costs, not just rank plans correctly.
+	EXPECT_NEAR(new_plan.estimated_bits / n_values, new_bpv, 2.0);
+}
+
+TEST(SubIntSplitSelector, FforOnlyCodecSetMatchesEmptyCodecSet) {
+	const std::vector<uint64_t> data = make_snowflake(VEC_SZ * 4);
+
+	SubIntSplitSelectorConfig ffor_only;
+	ffor_only.section_codecs = SECTION_CODEC_FFOR;
+	SubIntSplitSelectorConfig empty;
+	empty.section_codecs = 0;
+
+	EXPECT_DOUBLE_EQ(run<uint64_t>(data, 4, ffor_only).estimated_bits, run<uint64_t>(data, 4, empty).estimated_bits);
 }
 
 } // namespace

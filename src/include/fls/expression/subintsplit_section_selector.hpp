@@ -9,8 +9,9 @@
 // two-phase design (SubIntSplitSelector.h's DP guesses a per-range codec only to steer where
 // splits go and then discards that guess; the real per-section codec comes later, from
 // `encodeNested` -- Nimble's ordinary top-level encoder-selection machinery run on the real
-// extracted section values): `subintsplit_selector.hpp`'s DP cost oracle is untouched by this
-// file, and this selector reuses FastLanes' own real, measured-cost wizard machinery
+// extracted section values): `subintsplit_selector.hpp`'s DP prices a range with cheap size
+// estimates for this same candidate pool (SECTION_CODECS_ALL), and this selector reuses
+// FastLanes' own real, measured-cost wizard machinery
 // (TryExpr/ChooseBestExpr, wizard_internal.hpp) the same way the top-level wizard already does
 // for whole columns -- just pointed at one section's extracted values instead.
 //
